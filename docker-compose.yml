@@ -1,0 +1,44 @@
+# Local trial with both storage emulators:
+#   cp .env.example .env   (then edit the password)
+#   docker compose up --build
+# App:   http://localhost:8080   (user: admin, password from .env)
+# MinIO console: http://localhost:9001
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - docorg-data:/app/data
+    environment:
+      DOCORG_ADMIN_PASSWORD: ${DOCORG_ADMIN_PASSWORD:?Set DOCORG_ADMIN_PASSWORD in .env}
+      # Point the demo connections from appsettings.json at the emulator containers
+      DocumentOrganizer__StorageConnections__Azurite__ConnectionString: "UseDevelopmentStorage=true;DevelopmentStorageProxyUri=http://azurite"
+      DocumentOrganizer__StorageConnections__LocalS3__ServiceUrl: "http://minio:9000"
+      DocumentOrganizer__StorageConnections__LocalS3__AccessKeyId: ${MINIO_ROOT_USER:-minioadmin}
+      DocumentOrganizer__StorageConnections__LocalS3__SecretAccessKey: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    depends_on:
+      - azurite
+      - minio
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck --location /data
+    volumes:
+      - azurite-data:/data
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+
+volumes:
+  docorg-data:
+  azurite-data:
+  minio-data:

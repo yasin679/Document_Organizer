@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    Document Organizer
+    No third-party NuGet packages: SQLite is called through the OS library
+    (winsqlite3.dll ships with Windows 10+, libsqlite3 on Linux/macOS), Azure Blob
+    and Amazon S3 use their REST APIs, and Excel files are read/written with System.IO.Compression.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DocumentOrganizer</RootNamespace>
+    <AssemblyName>DocumentOrganizer</AssemblyName>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

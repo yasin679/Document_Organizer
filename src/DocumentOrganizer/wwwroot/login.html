@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Document Organizer</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="panel login panel-b" id="f" autocomplete="on">
+    <div class="brand" style="padding:0"><div class="brand-mark">DO</div><div><b style="color:var(--fg)">Document Organizer</b><small style="color:var(--fg-3)">Copy-only</small></div></div>
+    <h1 style="font-size:20px">Sign in</h1>
+    <div class="field"><label for="u">User name</label><input class="input" id="u" name="username" autocomplete="username" required></div>
+    <div class="field"><label for="p">Password</label><input class="input" id="p" name="password" type="password" autocomplete="current-password" required></div>
+    <div class="err-text" id="e" hidden></div>
+    <button class="btn primary" type="submit" style="justify-content:center">Sign in</button>
+    <div class="hint">Sessions end after a period of inactivity. Every sign-in is recorded in the audit log.</div>
+  </form>
+</div>
+<script src="login.js"></script>
+</body>
+</html>

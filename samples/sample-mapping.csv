@@ -1,0 +1,5 @@
+ID,EmployeeCode,Type,Name,Description,UploadedOn,FileName,ModuleCode,SubModuleCode
+1001,E00101,Offer Letter,Offer Letter,Offer letter uploaded via self-service,12-Mar-2019,e00101_offer_letter.pdf,EMP,DOCS
+1002,E00101,Payslip,Payslip March,Payslip uploaded by payroll,05-Apr-2022,e00101_payslip_mar.pdf,EMP,PAYROLL
+1003,E00102,ID Proof,ID Proof,ID proof uploaded via self-service,25-Nov-2021,e00102_id_proof.pdf,EMP,DOCS
+1004,E00103,Tax Form,Tax Form FY23,Annual tax form,15-Jun-2023,payroll/2023/E00103_TaxForm_FY23.pdf,EMP,PAYROLL

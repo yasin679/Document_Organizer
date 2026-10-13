@@ -1,0 +1,24 @@
+# Build output
+bin/
+obj/
+app/
+publish/
+
+# Runtime data: database, uploaded mapping files, demo data
+data/
+
+# Local configuration with secrets (see README)
+appsettings.Production.json
+appsettings.*.local.json
+.env
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db

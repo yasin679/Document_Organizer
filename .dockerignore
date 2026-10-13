@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+**/data/
+app/
+.git/
+.github/
+tests/
+*.md
+.env
