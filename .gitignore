@@ -22,3 +22,6 @@ appsettings.*.local.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary files from the PDF build
+docs/.build-*.html

@@ -73,6 +73,8 @@ td.mono{white-space:nowrap}
 td.wrap{min-width:220px}
 td.lbl-cell{min-width:220px;max-width:340px}
 td.nowrap{white-space:nowrap}
+td.src-cell{max-width:230px}
+.lbl-cell .src-cell{max-width:290px}
 .src-cell{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tr:last-child td{border-bottom:0}
 tr.click{cursor:pointer} tr.click:hover td{background:var(--surface-2)}

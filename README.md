@@ -10,6 +10,12 @@ It is **copy-only**: source documents are never moved, changed or deleted.
 - No third-party packages: Azure Blob and S3 are called through their REST APIs (Shared Key / SAS / Entra ID, and AWS Signature Version 4).
 - Runs on Windows, Linux and macOS, or in a container.
 
+## Documentation
+
+Full guides are in [`docs/`](docs/README.md), as Markdown and PDF: [User Guide](docs/user-guide.md), [Installation and Administration](docs/installation-and-administration.md), [Quick Start](docs/quick-start.md), [FAQ and Troubleshooting](docs/faq-and-troubleshooting.md), [Technical Design](docs/technical-design.md), [UAT Test Cases](docs/uat-test-cases.md) and [Release Notes v2.0](docs/release-notes.md).
+
+![Document Organizer dashboard](docs/images/01-dashboard.jpg)
+
 ## How it works
 
 1. **Create a job.** Choose a source and a destination: an Azure Blob container, an S3 bucket (each with an optional prefix), or a folder. Access is checked before the job is saved.
@@ -228,6 +234,7 @@ src/DocumentOrganizer/
                              S3Store (Signature V4, multipart, CopyObject), AwsCredentials (credential chain)
   Infrastructure/            SQLite (OS library), xlsx/csv reader-writer, database schema, users
   wwwroot/                   web UI (HTML/CSS/JS, no external assets)
+docs/                        user, admin, technical and test documentation (Markdown + PDF)
 samples/                     example mapping file
 tests/e2e.mjs                end-to-end API test
 Dockerfile, docker-compose.yml
