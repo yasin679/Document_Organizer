@@ -33,7 +33,10 @@ public static class MappingFile
 
     public static IEnumerable<string[]> Rows(string path) =>
         path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)
-            ? Csv.ReadRows(path) : XlsxReader.ReadRows(path);
+            ? Csv.ReadRows(path) : XlsxReader.ReadRows(path, IsHeaderRow);
+
+    /// <summary>A row that names at least 3 known columns is taken as the header row.</summary>
+    private static bool IsHeaderRow(string[] row) => row.Count(c => Fields.Any(f => f.Synonyms.Any(s => Norm(s) == Norm(c)))) >= 3;
 
     public sealed record Inspection(int HeaderRow, string[] Headers, List<string[]> Preview, int DataRows, ColumnMap AutoMap);
 
@@ -49,8 +52,7 @@ public static class MappingFile
             if (headerRow < 0)
             {
                 firstRows.Add(row);
-                int hits = row.Count(c => Fields.Any(f => f.Synonyms.Any(s => Norm(s) == Norm(c))));
-                if (hits >= 3) { headerRow = index; headers = row.Select(c => c.Trim()).ToArray(); }
+                if (IsHeaderRow(row)) { headerRow = index; headers = row.Select(c => c.Trim()).ToArray(); }
                 else if (index >= 19) { headerRow = 0; headers = firstRows[0].Select(c => c.Trim()).ToArray(); preview.AddRange(firstRows.Skip(1).Take(5)); dataRows = firstRows.Count - 1; }
             }
             else if (row.Any(c => !string.IsNullOrWhiteSpace(c)))
@@ -90,8 +92,10 @@ public static class MappingFile
         Req(map.EmployeeCode, "Employee code");
         Req(map.DocumentType, "Document type");
         Req(map.FileName, "File name");
-        if (cfg.YearRule == "UploadedOn") Req(map.UploadedOn, "Uploaded on");
-        if (cfg.YearRule == "YearColumn") Req(map.Year, "Year");
+        // With several mapping files, a file without the rule's column may use the other date column instead.
+        bool hasUp = !string.IsNullOrWhiteSpace(map.UploadedOn), hasYear = !string.IsNullOrWhiteSpace(map.Year);
+        if (cfg.YearRule == "UploadedOn" && !hasYear) Req(map.UploadedOn, "Uploaded on");
+        if (cfg.YearRule == "YearColumn" && !hasUp) Req(map.Year, "Year");
         if (cfg.YearRule is "FileNamePattern" or "PathPattern")
         {
             try { _ = new Regex(cfg.YearPattern ?? "", RegexOptions.None, TimeSpan.FromSeconds(1)); }
@@ -131,7 +135,8 @@ public static class MappingFile
                 RecordId = V(iId) ?? $"ROW-{rowNum}",
                 EmployeeCode = V(iEmp), EmployeeName = V(iName), DocumentType = V(iType), DocumentName = V(iDoc),
                 Description = V(iDesc), UploadedOn = V(iUp), FileName = V(iFile),
-                ModuleCode = V(iMod), SubModuleCode = V(iSub), Year = V(iYear), MappingFile = mappingFileName
+                ModuleCode = V(iMod), SubModuleCode = V(iSub), Year = V(iYear), MappingFile = mappingFileName,
+                HasUploadedOnColumn = iUp >= 0, HasYearColumn = iYear >= 0
             };
         }
     }
@@ -149,7 +154,10 @@ public static class YearRules
     /// <summary>Returns a 4-digit year or null with a reason.</summary>
     public static (string? Year, string? Error) Resolve(JobConfig cfg, Candidate rec, string? sourceKey)
     {
-        string? y = cfg.YearRule switch
+        string rule = cfg.YearRule;
+        if (rule == "UploadedOn" && !rec.HasUploadedOnColumn && rec.HasYearColumn) rule = "YearColumn";
+        else if (rule == "YearColumn" && !rec.HasYearColumn && rec.HasUploadedOnColumn) rule = "UploadedOn";
+        string? y = rule switch
         {
             "UploadedOn" => FromDate(rec.UploadedOn),
             "YearColumn" => FromYearText(rec.Year),
@@ -158,7 +166,7 @@ public static class YearRules
             _ => null
         };
         if (y != null && int.TryParse(y, out var n) && n >= 1980 && n <= DateTime.Now.Year + 1) return (y, null);
-        var src = cfg.YearRule switch { "UploadedOn" => "UploadedOn", "YearColumn" => "Year column", "FileNamePattern" => "file name", _ => "path" };
+        var src = rule switch { "UploadedOn" => "UploadedOn", "YearColumn" => "Year column", "FileNamePattern" => "file name", _ => "path" };
         return (null, y == null ? $"Year could not be determined from {src}." : $"Year {y} from {src} is out of range.");
     }
 

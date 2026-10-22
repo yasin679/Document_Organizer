@@ -233,7 +233,10 @@ function colsFor(cfg, mid) { return (cfg.fileColumns && cfg.fileColumns[mid]) ||
 function jobColumns(job) {
   const cfg = currentCfg(job), cur = mapSel(job), ms = maps(job);
   const info = cur.info, cols = colsFor(cfg, cur.id);
-  const required = { EmployeeCode: 1, DocumentType: 1, FileName: 1, UploadedOn: cfg.yearRule === 'UploadedOn', Year: cfg.yearRule === 'YearColumn' };
+  // A file without the year rule's column can use the other date column instead (files in one job can differ).
+  const required = { EmployeeCode: 1, DocumentType: 1, FileName: 1, UploadedOn: cfg.yearRule === 'UploadedOn' && !cols.year, Year: cfg.yearRule === 'YearColumn' && !cols.uploadedOn };
+  const yearNote = cfg.yearRule === 'UploadedOn' && !cols.uploadedOn && cols.year ? 'This file has no Uploaded on column, so its Year column gives the year.'
+    : cfg.yearRule === 'YearColumn' && !cols.year && cols.uploadedOn ? 'This file has no Year column, so its Uploaded on date gives the year.' : '';
   const key = f => f[0].toLowerCase() + f.slice(1);
   const sample = col => { const i = info.headers.indexOf(col); return i >= 0 && info.preview[0] ? info.preview[0][i] || '' : ''; };
   const rows = S.meta.fields.map(f => {
@@ -245,6 +248,7 @@ function jobColumns(job) {
   const missingIn = ms.filter(m => ['employeeCode', 'documentType', 'fileName'].some(k => !colsFor(cfg, m.id)[k])).map(m => m.fileName);
   return `<div class="panel"><div class="panel-h"><h2>Map columns to application fields</h2><span class="small muted">Detected automatically${ms.length > 1 ? ' for each file' : ''}. Change any column that differs.</span></div>
     ${ms.length > 1 ? `<div class="panel-b" style="padding-bottom:0">${fileTabs(job, 'col-tab')}${missingIn.length ? `<div class="callout warn"><div>Required columns still missing in: <b>${missingIn.map(esc).join(', ')}</b></div></div>` : ''}</div>` : ''}
+    ${yearNote ? `<div class="panel-b" style="padding-bottom:0"><div class="callout"><div>${esc(yearNote)}</div></div></div>` : ''}
     <div class="tbl-wrap"><table><thead><tr><th>Application field</th><th>Required</th><th>Column in ${esc(cur.fileName)}</th><th>Sample value</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
     <div class="foot"><button class="btn" data-action="goto-step" data-step="2">Back</button><button class="btn primary" data-action="goto-step" data-step="4">Continue to rules</button></div>`;
 }
@@ -254,8 +258,10 @@ function exampleDest(job, cfg) {
   const info = cur.info, p = info.preview[0] || [], cols = colsFor(cfg, cur.id);
   const col = c => { const i = info.headers.indexOf(cols[c]); return i >= 0 ? p[i] || '' : ''; };
   let year = '????';
-  if (cfg.yearRule === 'UploadedOn') { const m = String(col('uploadedOn')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
-  if (cfg.yearRule === 'YearColumn') { const m = String(col('year')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
+  let rule = cfg.yearRule;
+  if (rule === 'UploadedOn' && !cols.uploadedOn && cols.year) rule = 'YearColumn'; else if (rule === 'YearColumn' && !cols.year && cols.uploadedOn) rule = 'UploadedOn';
+  if (rule === 'UploadedOn') { const m = String(col('uploadedOn')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
+  if (rule === 'YearColumn') { const m = String(col('year')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
   const file = String(col('fileName')).split(/[,;]/)[0].trim().split(/[\\/]/).pop();
   const vals = { EmployeeCode: col('employeeCode'), DocumentType: col('documentType'), Year: year, FileName: file, ModuleCode: col('moduleCode'), SubModuleCode: col('subModuleCode'), DocumentName: col('documentName'), EmployeeName: col('employeeName'), MappingFile: cur.fileName.replace(/\.[^.]+$/, '') };
   return (cfg.template || '').replace(/<(\w+)>/g, '{$1}').replace(/\{(\w+)\}/g, (_, t) => vals[Object.keys(vals).find(k => k.toLowerCase() === t.toLowerCase())] ?? `{${t}}`);

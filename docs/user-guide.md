@@ -230,16 +230,26 @@ After the upload the page lists every mapping file:
 > [!TIP]
 > **No reformatting needed**
 >
-> The application finds the header row by itself, even if the export has title rows above it. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood. Cells that only say `NULL`, `N/A`, `NA`, `None` or `-` (common in database exports) are treated as empty.
+> The application finds the header row by itself, even if the export has title rows above it. In an Excel workbook it uses the first visible sheet that has a header row, so a cover or summary sheet in front of the data is fine. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood. CSV files may use commas, semicolons or tabs, and may be saved as UTF-8 or by Excel on Windows (accented names such as `Résumé.pdf` are read correctly). Cells that only say `NULL`, `N/A`, `NA`, `None` or `-` (common in database exports) are treated as empty.
+
+> [!NOTE]
+> **Upload checks**
+>
+> A file with the same content as one already added is refused (it would turn every record into a duplicate). Two different files with the same name are kept apart by adding a number, for example `export (2).csv`. If any file in an upload cannot be read, nothing from that upload is kept and the job's current mapping files are untouched.
 
 > [!NOTE]
 > **Several file names in one cell**
 >
-> Some exports list several uploaded files for one document in a single File name cell, separated by commas or semicolons, for example `marksheet_1.jpg,marksheet_2.pdf`. Each name becomes its own entry with its own status: record `ROW-68` becomes `ROW-68/1` and `ROW-68/2`. A cell that is exactly the name of a file in the source (a file name that really contains a comma) is kept whole. You can turn this off in step 4.
+> Some exports list several uploaded files for one document in a single File name cell, separated by commas or semicolons, for example `marksheet_1.jpg,marksheet_2.pdf`. Each name becomes its own entry with its own status: record `ROW-68` becomes `ROW-68/1` and `ROW-68/2`. A name that really contains a comma is kept whole when a file with exactly that name is in the source, even next to other names: `report, final.pdf,offer.pdf` gives `report, final.pdf` and `offer.pdf`. Folder paths in the cell work too. A cell that only holds placeholders, such as `NULL,NULL`, counts as blank. You can turn splitting off in step 4.
 
 ## 7 Mapping the columns
 
-Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name. With several mapping files, each file has its own column mapping, so files with different column names can be combined.
+Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name. With several mapping files, each file has its own column mapping, so files with different column names, column order, extra columns or title rows can be combined. If a file's columns are not recognised, map them by hand on its tab; the scan is refused until every file has its required columns, and the message names the file.
+
+> [!NOTE]
+> **Files with different date columns**
+>
+> The year rule (step 4) applies to the whole job, but files can differ. With the rule **UploadedOn year**, a file that has no Uploaded on column but has a Year column uses its Year column; with **Dedicated Year column**, a file without a Year column uses its Uploaded on date. Step 3 shows a note on that file's tab when this applies.
 
 ![Figure 10: Step 3, column mapping for the second of two mapping files](images/10-column-mapping.jpg)
 

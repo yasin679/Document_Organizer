@@ -102,12 +102,15 @@ public sealed class Candidate
     [JsonIgnore] public int RowNumber { get; set; }
     /// <summary>Unique within one scan; record IDs can repeat across (or even within) mapping files.</summary>
     [JsonIgnore] public int Seq { get; set; }
+    /// <summary>The record's mapping file has an Uploaded on column / a Year column (files in one job can differ).</summary>
+    public bool HasUploadedOnColumn { get; set; } = true;
+    public bool HasYearColumn { get; set; } = true;
 
     public Candidate CloneWithFile(string fileName, string recordId) => new()
     {
         RecordId = recordId, EmployeeCode = EmployeeCode, EmployeeName = EmployeeName, DocumentType = DocumentType, DocumentName = DocumentName,
         Description = Description, UploadedOn = UploadedOn, FileName = fileName, ModuleCode = ModuleCode, SubModuleCode = SubModuleCode,
-        Year = Year, MappingFile = MappingFile, RowNumber = RowNumber
+        Year = Year, MappingFile = MappingFile, RowNumber = RowNumber, HasUploadedOnColumn = HasUploadedOnColumn, HasYearColumn = HasYearColumn
     };
 }
 

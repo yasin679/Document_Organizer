@@ -94,6 +94,8 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 | UAT-25 | M | Your own mapping file | Upload a real export from your source system (or `samples/sample-mapping.csv`) in a separate draft job | Header row and columns detected; required fields mapped or easy to map | |
 | UAT-25a | M | Several mapping files | In a draft job, select two exports at once (for example HR documents and payroll) and **Upload** | Both listed with their rows and fingerprints, plus a Total row | |
 | UAT-25b | H | Different column names | Use a second file whose columns are named differently (for example `EmpCode`, `StoredFileName`); open step 3 and click its name | Each file has its own column mapping; required fields mapped for both | |
+| UAT-25d | H | Different structure | Add an `.xlsx` with title rows above the header and extra columns, plus a semicolon `.csv` that has a Year column but no Uploaded on column | Both read; header row found below the titles; step 3 shows the note that the Year column gives the year | |
+| UAT-25e | H | Same file twice | Upload a mapping file that is already in the job | Refused with "… has the same content as …"; list unchanged | |
 | UAT-25c | H | Remove and add | **Remove** one file, then add it again with **Add more mapping files** | List updates; after a scan, changing the files clears the results | |
 
 ## 6 Rules and scan

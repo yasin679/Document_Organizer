@@ -33,7 +33,7 @@ One row per document with at least an employee code, a document type and a file 
 
 **Can I use more than one mapping file in a job?**
 
-Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder.
+Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder. Files can also differ in column order, extra columns, title rows, CSV delimiter, file type (`.xlsx` and `.csv` together) and date column (a file with only a Year column is fine).
 
 **A File name cell lists several files separated by commas. Is that supported?**
 
@@ -163,6 +163,9 @@ No. There is no screen or API to change the audit log.
 | Required field shows **Missing** in column mapping | The column has a different name in this file | Pick the right column from the list |
 | Almost everything UNMAPPED | Wrong mapping file for this source, the File name column is mapped wrongly, or the source also holds documents from other modules | Check the file and the File name mapping; add the other modules' exports as extra mapping files |
 | Many MISSING whose file name contains commas | Version 2.0 or earlier, or **Several file names in one cell** turned off | Use version 2.1 with the option on (step 4), then scan again |
+| Accented file names (`é`, `ü`) MISSING although the files exist | Version 2.0 or earlier read every CSV as UTF-8, so a CSV saved by Excel on Windows lost accented characters | Use version 2.1 and scan again |
+| "… has the same content as …, which is already added" | The same mapping file was uploaded twice | Nothing to do; the first copy is kept |
+| Scan refused: "Column … is required" naming one of several files | That file's columns were not recognised | Step 3, click the file's name, map its columns |
 | Almost everything MISSING | Source prefix, bucket or folder is wrong | Check the source location in step 1 |
 | Almost everything DUPLICATE | Destination already holds an earlier copy | Use a new destination prefix, or the Compare hash rule |
 | Many INVALID "year could not be determined" | UploadedOn is blank or not a date | Use the Year column or a file-name pattern in step 4 |

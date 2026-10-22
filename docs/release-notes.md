@@ -31,7 +31,8 @@ Some document logs list several uploaded files for one document in a single File
 
 - Each name now becomes its own entry with its own status and destination. Record `ROW-68` becomes `ROW-68/1`, `ROW-68/2` and so on.
 - Commas, semicolons and line breaks separate names; spaces around them are ignored.
-- A cell that is exactly the name of a file in the source (a real file name containing a comma) is kept whole.
+- A name that is exactly the name of a file in the source (a real file name containing a comma) is kept whole, also when it sits next to other names in the cell (`report, final.pdf,x.pdf`). Folder paths in the cell work.
+- A cell that only holds placeholders (`NULL,NULL`) is blank, so INVALID.
 - The option **Several file names in one cell** in step 4 is on by default.
 
 ### 2.2 Placeholder values (fix)
@@ -51,7 +52,9 @@ The DUPLICATE count now means "copied once already", and the MISSING count cover
 
 - Step 2 accepts **one or more files** at once, and more can be added or removed until the job is approved.
 - Records of all files are combined in one scan; a document repeated across files is reported once as DUPLICATE, naming the other file.
-- Each file has **its own column mapping** in step 3, so exports with different column names can be combined.
+- Each file has **its own column mapping** in step 3, so exports with different column names, column order, extra columns, title rows, CSV delimiters and file types (`.xlsx` and `.csv`) can be combined. The scan is refused, naming the file, until every file has its required columns.
+- A file without the year rule's column uses its other date column: a Year-only file under the **UploadedOn year** rule uses its Year column, and the reverse.
+- Upload checks: the same content twice is refused; two files with the same name become `name (2).csv`; a failed file cancels the whole upload without leftovers.
 - Every record keeps the **name of its mapping file**: shown in the results when a job has several files, in a new **Mapping File** column of both reports, and in the report summary (each file with rows and SHA-256).
 - New folder-template token **`{MappingFile}`** (file name without extension) keeps each file's documents apart.
 - New API endpoints: `POST /jobs/{id}/mappings` (add files) and `DELETE /jobs/{id}/mappings/{mappingId}`; `POST /jobs/{id}/mapping` now replaces all files with the uploaded file(s).
@@ -60,7 +63,13 @@ The DUPLICATE count now means "copied once already", and the MISSING count cover
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.
 - Resolving an ambiguous file identifies the record by ID and mapping file.
-- New automated test `tests/e2e-mapping.mjs`, also run in GitHub Actions.
+- CSV files saved by Excel on Windows (Windows-1252) are read correctly; earlier, accented file names in them were not found.
+- In an Excel workbook, the first visible sheet with a header row is used, so a cover or summary sheet in front is fine.
+- Adding a second file to a job created in v2.0 keeps that job's hand-edited column mapping.
+- Saving the rules without per-file columns (v2.0 clients and scripts) no longer resets other files' columns.
+- Resolving an ambiguous file to a record whose ID also exists in another mapping file no longer marks it DUPLICATE by mistake.
+- A browser icon was added (removes a 404 on every page load).
+- New automated tests `tests/e2e-mapping.mjs` and `tests/e2e-scenarios.mjs`, both run in GitHub Actions.
 
 ## 3 Verified results of v2.1
 
@@ -84,7 +93,10 @@ Every one of the 14,657 file names in multi-file cells exists in the source. Sca
 | Test | Result |
 |---|---|
 | `tests/e2e-mapping.mjs`: split cells, real comma in a file name, `NULL`, repeats of missing and found records, two mapping files with different column names, remove and add, `{MappingFile}`, report column | 24 checks pass |
+| `tests/e2e-scenarios.mjs`: 20 kinds of File name cell; four mapping files with different columns, structure, encoding and date columns in one job; hand-mapping, per-file year rule, ambiguity across files with colliding IDs; upload checks, roles and locked jobs; workbook with a summary sheet; the same mapping through folder → Azure → S3 → folder | 76 checks pass |
 | `tests/e2e.mjs`: 7 jobs across folders, Azure and S3, including cross-provider | 159 checks pass, unchanged from v2.0 |
+| Upgrade: job with hand-edited columns made on v2.0, opened, rescanned and given a second file on v2.1 | 6 checks pass |
+| Browser test: upload four files, tabs, hand-mapping, save, resolve, remove, same file twice | 15 checks pass, no browser errors |
 
 ## 4 Upgrading from v2.0
 
@@ -187,7 +199,8 @@ The database is upgraded automatically on start; existing jobs, users and the au
 | 4 | Server-side copy only within one Azure storage account or one S3 connection | Other combinations stream through the application |
 | 5 | One application instance per data folder | Do not run two instances against the same data volume |
 | 6 | The Docker image has not been built in the release pipeline yet | Build it locally (`docker compose up --build`) and run UAT-01 and UAT-02 |
-| 7 | A File name cell is split on commas and semicolons unless the whole value is a source file name. A real file name with a comma that is **not** in the source is still split (then reported MISSING per part) | Turn off **Several file names in one cell** in step 4 for such a mapping file |
+| 7 | A File name cell is split on commas and semicolons unless the text is a source file name. A real file name with a comma that is **not** in the source is still split (then reported MISSING per part); so is a name with more than five commas | Turn off **Several file names in one cell** in step 4 for such a mapping file |
+| 8 | The year rule is chosen for the whole job; only the fallback between Uploaded on and Year differs per file | Use one job per year rule if files need different rules (for example one by file name pattern) |
 
 ## 10 Installation notes
 

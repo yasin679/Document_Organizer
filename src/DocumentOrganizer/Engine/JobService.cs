@@ -125,8 +125,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                 ("j", jobId), ("d", ev.DestKey), ("id", itemId));
             if (clash != null) { ev.Status = ItemStatus.Duplicate; ev.Reason = $"Destination path collision: {clash.Str("source_key")} already maps to {ev.DestKey}."; }
         }
-        var claimedBy = app.Db.QueryOne("SELECT source_key FROM items WHERE job_id=@j AND record_id=@r AND status IN ('READY','PROCESSED') AND id<>@id",
-            ("j", jobId), ("r", recordId), ("id", itemId));
+        var claimedBy = app.Db.QueryOne("SELECT source_key FROM items WHERE job_id=@j AND record_id=@r AND IFNULL(mapping_file,'')=IFNULL(@mf,'') AND status IN ('READY','PROCESSED') AND id<>@id",
+            ("j", jobId), ("r", recordId), ("mf", rec.MappingFile), ("id", itemId));
         if (claimedBy != null && ev.Status == ItemStatus.Ready) { ev.Status = ItemStatus.Duplicate; ev.Reason = $"Record {recordId} is already matched to {claimedBy.Str("source_key")}."; }
 
         app.Db.Execute(@"UPDATE items SET status=@st, reason=@reason, record_id=@rid, employee_code=@emp, employee_name=@ename, doc_type=@type, doc_name=@dname,

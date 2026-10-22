@@ -187,8 +187,12 @@ public static class Endpoints
         {
             var (u, r) = Who(ctx);
             var j = Need(db, id); EnsureEditable(j, js);
-            var added = await SaveUploads(ctx, j, new List<MappingSource>(), opt, u);
-            return Results.Ok(ApplyMappings(db, j, added, added, u, r, Ip(ctx), "Mapping uploaded"));
+            // New files get new IDs, so a refused upload never touches the files the job already has.
+            var old = AppDb.Mappings(j);
+            var added = await SaveUploads(ctx, j, old, opt, u, replace: true);
+            var res = ApplyMappings(db, j, added, added, u, r, Ip(ctx), "Mapping uploaded");
+            DeleteFiles(old);
+            return Results.Ok(res);
         }).RequireAuthorization("Operate").DisableAntiforgery();
 
         api.MapPost("/jobs/{id}/mappings", async (HttpContext ctx, string id, AppDb db, OrganizerOptions opt, JobService js) =>
@@ -221,10 +225,14 @@ public static class Endpoints
             var demo = Path.Combine(opt.DataPath, "demo", DemoData.MappingFileName);
             if (!File.Exists(demo)) throw new ApiError("Create the demo data first (Dashboard > Load demo data).");
             var dir = Path.Combine(opt.DataPath, "jobs", id); Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, "mapping-m1.xlsx");
+            var old = AppDb.Mappings(j);
+            var mid = "m" + NextMappingNumber(old);
+            var path = Path.Combine(dir, $"mapping-{mid}.xlsx");
             File.Copy(demo, path, true);
-            var m = InspectMapping(path, Path.GetFileName(demo), "m1", u);
-            return Results.Ok(ApplyMappings(db, j, new List<MappingSource> { m }, new List<MappingSource> { m }, u, r, Ip(ctx), "Mapping uploaded"));
+            var m = InspectMapping(path, Path.GetFileName(demo), mid, u);
+            var res = ApplyMappings(db, j, new List<MappingSource> { m }, new List<MappingSource> { m }, u, r, Ip(ctx), "Mapping uploaded");
+            DeleteFiles(old);
+            return Results.Ok(res);
         }).RequireAuthorization("Operate");
 
         api.MapPut("/jobs/{id}/config", (HttpContext ctx, string id, JobConfig cfg, AppDb db, JobService js) =>
@@ -234,11 +242,15 @@ public static class Endpoints
             var maps = AppDb.Mappings(j);
             if (maps.Count == 0) throw new ApiError("Upload the mapping file first.");
             cfg.Template = Template.Normalize(cfg.Template ?? "");
-            if (cfg.FileColumns != null)
-            {
-                foreach (var k in cfg.FileColumns.Keys.Where(k => maps.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
-                if (cfg.FileColumns.TryGetValue(maps[0].Id, out var firstMap)) cfg.Columns = firstMap;
-            }
+            // Column mapping per file. A client that sends only "columns" (as v2.0 did) changes the first file;
+            // files it does not mention keep their saved mapping, so different-column files are never overwritten.
+            var saved = AppDb.Cfg(j.Str("config_json")).FileColumns ?? new();
+            cfg.FileColumns ??= new();
+            foreach (var k in cfg.FileColumns.Keys.Where(k => maps.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
+            foreach (var m in maps)
+                if (!cfg.FileColumns.ContainsKey(m.Id))
+                    cfg.FileColumns[m.Id] = m == maps[0] ? cfg.Columns : saved.TryGetValue(m.Id, out var keep) ? keep : cfg.Columns;
+            cfg.Columns = cfg.FileColumns[maps[0].Id];
             var errors = ValidateMappings(cfg, maps);
             if (cfg.DuplicateRule == "Overwrite" && !db.LoadSettings().AllowOverwrite) errors.Add("Overwrite is not permitted by the administrator.");
             if (!new[] { "UploadedOn", "YearColumn", "FileNamePattern", "PathPattern" }.Contains(cfg.YearRule)) errors.Add("Unknown year rule.");
@@ -475,7 +487,13 @@ public static class Endpoints
     private static readonly string[] MappingExtensions = { ".xlsx", ".csv", ".txt" };
 
     /// <summary>Saves the uploaded files of a request and inspects each. IDs continue after the job's existing mapping files.</summary>
-    private static async Task<List<MappingSource>> SaveUploads(HttpContext ctx, Row j, List<MappingSource> existing, OrganizerOptions opt, string user)
+    private static int NextMappingNumber(List<MappingSource> existing) =>
+        existing.Select(m => int.TryParse(m.Id.TrimStart('m'), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
+
+    private static void DeleteFiles(List<MappingSource> list) { foreach (var m in list) try { File.Delete(m.Path); } catch { } }
+
+    /// <summary>Saves uploaded mapping files with IDs after the existing ones. With replace, the existing files are only used for numbering.</summary>
+    private static async Task<List<MappingSource>> SaveUploads(HttpContext ctx, Row j, List<MappingSource> existing, OrganizerOptions opt, string user, bool replace = false)
     {
         var form = await ctx.Request.ReadFormAsync();
         if (form.Files.Count == 0) throw new ApiError("Choose a mapping file (.xlsx or .csv).");
@@ -484,15 +502,32 @@ public static class Endpoints
                 throw new ApiError($"Mapping file must be .xlsx or .csv ({f.FileName}).");
         var id = j.Str("id")!;
         var dir = Path.Combine(opt.DataPath, "jobs", id); Directory.CreateDirectory(dir);
-        int next = existing.Select(m => int.TryParse(m.Id.TrimStart('m'), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
+        int next = NextMappingNumber(existing);
         var added = new List<MappingSource>();
-        foreach (var f in form.Files)
+        try
         {
-            var mid = "m" + next++;
-            var path = Path.Combine(dir, $"mapping-{mid}{Path.GetExtension(f.FileName).ToLowerInvariant()}");
-            await using (var fs = File.Create(path)) await f.CopyToAsync(fs);
-            try { added.Add(InspectMapping(path, Path.GetFileName(f.FileName), mid, user)); }
-            catch { try { File.Delete(path); } catch { } throw; }
+            foreach (var f in form.Files)
+            {
+                var mid = "m" + next++;
+                var path = Path.Combine(dir, $"mapping-{mid}{Path.GetExtension(f.FileName).ToLowerInvariant()}");
+                await using (var fs = File.Create(path)) await f.CopyToAsync(fs);
+                MappingSource m;
+                // Two files with the same name (e.g. two "export.csv") must stay distinguishable in results and reports.
+                var name = Path.GetFileName(f.FileName);
+                var taken = (replace ? Enumerable.Empty<MappingSource>() : existing).Concat(added).Select(x => x.OriginalName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                for (int k = 2; taken.Contains(name); k++) name = $"{Path.GetFileNameWithoutExtension(f.FileName)} ({k}){Path.GetExtension(f.FileName)}";
+                try { m = InspectMapping(path, name, mid, user); }
+                catch { try { File.Delete(path); } catch { } throw; }
+                added.Add(m);
+                // The same file twice would turn every record into a duplicate: refuse it with a clear message.
+                var same = (replace ? Enumerable.Empty<MappingSource>() : existing).Concat(added.Take(added.Count - 1)).FirstOrDefault(x => x.Sha256 == m.Sha256);
+                if (same != null) throw new ApiError($"{m.OriginalName} has the same content as {same.OriginalName}, which is already added.");
+            }
+        }
+        catch
+        {
+            DeleteFiles(added);
+            throw;
         }
         return added;
     }
@@ -521,7 +556,10 @@ public static class Endpoints
         cfg.FileColumns ??= new();
         foreach (var k in cfg.FileColumns.Keys.Where(k => list.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
         foreach (var m in added) cfg.FileColumns[m.Id] = MappingFile.AutoMap(m.Headers);
-        foreach (var m in list) if (!cfg.FileColumns.ContainsKey(m.Id)) cfg.FileColumns[m.Id] = MappingFile.AutoMap(m.Headers);
+        // A job from before v2.1 has its (possibly hand-edited) column mapping only in Columns: keep it for its file.
+        foreach (var m in list)
+            if (!cfg.FileColumns.ContainsKey(m.Id))
+                cfg.FileColumns[m.Id] = m == list[0] && added.All(x => x.Id != m.Id) && HasAnyColumn(cfg.Columns) ? cfg.Columns : MappingFile.AutoMap(m.Headers);
         cfg.Columns = list.Count > 0 ? cfg.FileColumns[list[0].Id] : new ColumnMap();
         if (list.Count > 0 && list.All(m => cfg.ColumnsFor(m.Id).UploadedOn == null) && cfg.ColumnsFor(list[0].Id).Year != null) cfg.YearRule = "YearColumn";
         bool wasScanned = j.Str("status") != JobStatus.Draft;
@@ -540,6 +578,8 @@ public static class Endpoints
             columns = cfg.Columns, fileColumns = cfg.FileColumns
         };
     }
+
+    private static bool HasAnyColumn(ColumnMap c) => typeof(ColumnMap).GetProperties().Any(p => p.GetValue(c) is string v && v.Length > 0);
 
     private static List<string> ValidateMappings(JobConfig cfg, List<MappingSource> maps)
     {

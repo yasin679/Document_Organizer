@@ -74,6 +74,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
             {
                 var parts = SplitFileNames(r.FileName, sourceNames);
                 if (parts == null) { expanded.Add(r); continue; }
+                if (parts.Count == 0) { r.FileName = null; expanded.Add(r); continue; }   // only placeholders: blank
                 split++;
                 for (int i = 0; i < parts.Count; i++) expanded.Add(r.CloneWithFile(parts[i], $"{r.RecordId}/{i + 1}"));
             }
@@ -168,17 +169,46 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
     }
 
     /// <summary>
-    /// Returns the separate file names when a File name cell lists several files, or null when it is one file.
-    /// A cell that is itself the name of a source file (a file name containing a comma) is never split.
+    /// Returns the file names when a File name cell lists several files; an empty list when the cell holds only
+    /// separators and placeholders (treated as blank); or null when the cell is one file name.
+    /// A run of text that is exactly the name of a source file is kept together, so real names containing a comma
+    /// survive, even next to other names ("report, final.pdf,x.pdf" gives "report, final.pdf" and "x.pdf").
     /// </summary>
     public static List<string>? SplitFileNames(string? fileName, HashSet<string> sourceNames)
     {
-        if (string.IsNullOrWhiteSpace(fileName) || fileName.IndexOfAny(MappingFile.FileNameSeparators) < 0) return null;
-        if (sourceNames.Contains(LastSegment(fileName))) return null;
-        var parts = fileName.Split(MappingFile.FileNameSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(p => !MappingFile.Placeholders.Contains(p))
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        return parts.Count > 1 ? parts : parts.Count == 1 && parts[0] != fileName.Trim() ? parts : null;
+        var seps = MappingFile.FileNameSeparators;
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.IndexOfAny(seps) < 0) return null;
+        var whole = fileName.Trim();
+        if (IsSourceName(whole, sourceNames)) return null;
+        var tokens = new List<(string Text, char Sep)>();
+        int start = 0;
+        for (int i = 0; i < whole.Length; i++)
+            if (Array.IndexOf(seps, whole[i]) >= 0) { tokens.Add((whole[start..i], whole[i])); start = i + 1; }
+        tokens.Add((whole[start..], '\0'));
+        string Join(int from, int to)
+        {
+            var sb = new StringBuilder();
+            for (int k = from; k <= to; k++) { sb.Append(tokens[k].Text); if (k < to) sb.Append(tokens[k].Sep); }
+            return sb.ToString().Trim();
+        }
+        var parts = new List<string>();
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            int to = i;
+            for (int j = Math.Min(tokens.Count - 1, i + 4); j > i; j--)
+                if (IsSourceName(Join(i, j), sourceNames)) { to = j; break; }
+            var p = Join(i, to);
+            if (p.Length > 0 && !MappingFile.Placeholders.Contains(p) && !parts.Contains(p, StringComparer.OrdinalIgnoreCase)) parts.Add(p);
+            i = to;
+        }
+        return parts.Count == 1 && parts[0] == whole ? null : parts;
+    }
+
+    /// <summary>True when the text is a source file name (optionally with a folder path) and all its separators are inside the name.</summary>
+    private static bool IsSourceName(string s, HashSet<string> sourceNames)
+    {
+        var last = LastSegment(s);
+        return last.Length > 0 && sourceNames.Contains(last) && s[..^last.Length].IndexOfAny(MappingFile.FileNameSeparators) < 0;
     }
 
     private static List<Candidate> Match(SourceFile f, Dictionary<string, List<Candidate>> exact, Dictionary<string, List<Candidate>> ci,

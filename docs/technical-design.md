@@ -162,19 +162,22 @@ Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 
 ### 4.2 Reading the mapping files
 
-1. A job has one or more mapping files. Each is read as `.xlsx` (streaming XML) or `.csv` (delimiter detected).
+1. A job has one or more mapping files. Each is read as `.xlsx` (streaming XML; the first visible worksheet whose first 20 rows contain a header row, else the first visible worksheet) or `.csv` (delimiter detected; UTF-8, or Windows-1252 when the file is not valid UTF-8; a byte-order mark selects UTF-16).
+   Uploads are checked: a file whose SHA-256 equals one already in the job (or in the same upload) is refused; a duplicate file name gets a ` (n)` suffix; if any file of an upload fails, every file saved by that upload is deleted. New files always get new IDs, so a refused replacement never touches the current files.
 2. The header row is the first row within the first 20 that matches at least 3 known column names.
 3. Columns are auto-mapped per file by normalized name (spaces, dashes, dots and underscores removed; case ignored) using a list of common aliases. Each file keeps its own column mapping (`FileColumns` in the configuration, keyed by mapping file ID).
 4. Cells that only contain a placeholder (`NULL`, `N/A`, `NA`, `#N/A`, `None`, `Nil`, `-`, `--`, `(null)`) are treated as empty.
 5. Dates accept Excel serial numbers and common text formats (for example `25-Nov-2021`, `2021-11-25`, `dd/MM/yyyy`).
-6. Every record is tagged with its mapping file name. Each file's SHA-256 fingerprint and row count are stored and written to the audit log.
+6. Year rule per file: with `UploadedOn`, a file whose column map has no Uploaded on column but has a Year column uses the Year column; with `YearColumn`, the reverse. Records carry `HasUploadedOnColumn` / `HasYearColumn` (also kept in ambiguous candidates, so a resolution uses the same rule).
+7. Saving the configuration without `fileColumns` (as v2.0 clients do) changes only the first file's columns; other files keep their saved mapping.
+8. Every record is tagged with its mapping file name. Each file's SHA-256 fingerprint and row count are stored and written to the audit log.
 
 ### 4.3 Several file names in one cell
 
 The source is listed **before** matching. Then, if **Several file names in one cell** is on (the default), every record whose File name contains a comma, semicolon or line break is checked:
 
-1. If the whole value is the name of a file in the source, it is kept as one file name (real names can contain commas).
-2. Otherwise it is split on those separators; empty parts and placeholders are dropped, and repeated names within the cell are removed.
+1. If the whole value is the name of a file in the source (optionally with a folder path), it is kept as one file name (real names can contain commas).
+2. Otherwise it is split on those separators. Adjacent parts (up to five) are joined back, with their original separators, when the joined text is a source file name, so `report, final.pdf,x.pdf` gives `report, final.pdf` and `x.pdf`. Empty parts and placeholders are dropped, and repeated names within the cell are removed. A cell with only placeholders is treated as blank (INVALID).
 3. Each part becomes its own record with the same employee, type, dates and descriptions, and the ID `<record ID>/<n>` (for example `ROW-68/1`, `ROW-68/2`).
 
 Records are given an internal sequence number, so matching never depends on record IDs being unique (IDs can repeat across mapping files).
