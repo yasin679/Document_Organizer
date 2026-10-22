@@ -31,6 +31,14 @@ No. Documents go only from the source you choose to the destination you choose. 
 
 One row per document with at least an employee code, a document type and a file name, plus an upload date or a year. Column names are matched automatically and can be changed in step 3. See `samples/sample-mapping.csv` in the repository.
 
+**Can I use more than one mapping file in a job?**
+
+Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder.
+
+**A File name cell lists several files separated by commas. Is that supported?**
+
+Yes. Each name becomes its own entry: record `ROW-68` with `a.pdf,b.pdf` becomes `ROW-68/1` (`a.pdf`) and `ROW-68/2` (`b.pdf`), each with its own status. Semicolons work the same way. A cell that is exactly the name of a source file (a real file name containing a comma) is never split. The option is under step 4 and is on by default.
+
 **Who can do what?**
 
 Viewers can see everything and download reports. Operators can also create and run jobs. Administrators can also change settings and manage users.
@@ -67,7 +75,11 @@ Two or more mapping records name the same file, for example `offer_letter.pdf` f
 
 **The Missing count is very large. Are files lost?**
 
-Usually not. A large Missing count most often means the source prefix, bucket or folder was too narrow, so the scan did not see where those files are. Check the source location before reporting anything to the client.
+Usually not. A large Missing count most often means the source prefix, bucket or folder was too narrow, so the scan did not see where those files are. Check the source location before reporting anything to the client. In version 2.0 and earlier, File name cells listing several files and cells containing `NULL` were also counted as missing; version 2.1 splits the first and reports the second as INVALID (blank file name).
+
+**Why is a repeated record MISSING and not DUPLICATE?**
+
+A repeated record (same file, employee and type as an earlier record) is DUPLICATE only when the earlier record found its file, because then the file is copied once. When the file is not in the source, both records are MISSING, and the reason of the second names the first, so the Missing count matches the records that need follow-up.
 
 **Can I run two jobs at the same time?**
 
@@ -149,7 +161,8 @@ No. There is no screen or API to change the audit log.
 |---|---|---|
 | "No header row found in the file" or "could not be read as Excel" | The file has no column names in its first 20 rows, or is not a real `.xlsx`/`.csv` | Export the file again without changes |
 | Required field shows **Missing** in column mapping | The column has a different name in this file | Pick the right column from the list |
-| Almost everything UNMAPPED | Wrong mapping file for this source, or the File name column is mapped wrongly | Check the file and the File name mapping |
+| Almost everything UNMAPPED | Wrong mapping file for this source, the File name column is mapped wrongly, or the source also holds documents from other modules | Check the file and the File name mapping; add the other modules' exports as extra mapping files |
+| Many MISSING whose file name contains commas | Version 2.0 or earlier, or **Several file names in one cell** turned off | Use version 2.1 with the option on (step 4), then scan again |
 | Almost everything MISSING | Source prefix, bucket or folder is wrong | Check the source location in step 1 |
 | Almost everything DUPLICATE | Destination already holds an earlier copy | Use a new destination prefix, or the Compare hash rule |
 | Many INVALID "year could not be determined" | UploadedOn is blank or not a date | Use the Year column or a file-name pattern in step 4 |

@@ -181,19 +181,37 @@ public static class Endpoints
             return Results.Ok();
         }).RequireAuthorization("Operate");
 
+        // Mapping files. A job can have several; their records are combined in one scan.
+        // POST /mapping replaces all mapping files with the uploaded one(s); POST /mappings adds files; DELETE removes one.
         api.MapPost("/jobs/{id}/mapping", async (HttpContext ctx, string id, AppDb db, OrganizerOptions opt, JobService js) =>
         {
             var (u, r) = Who(ctx);
             var j = Need(db, id); EnsureEditable(j, js);
-            var form = await ctx.Request.ReadFormAsync();
-            var file = form.Files.FirstOrDefault() ?? throw new ApiError("Choose a mapping file (.xlsx or .csv).");
-            var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-            if (ext is not (".xlsx" or ".csv" or ".txt")) throw new ApiError("Mapping file must be .xlsx or .csv.");
-            var dir = Path.Combine(opt.DataPath, "jobs", id); Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, "mapping" + ext);
-            await using (var fs = File.Create(path)) await file.CopyToAsync(fs);
-            return Results.Ok(SaveMapping(db, j, path, file.FileName, u, r, Ip(ctx)));
+            var added = await SaveUploads(ctx, j, new List<MappingSource>(), opt, u);
+            return Results.Ok(ApplyMappings(db, j, added, added, u, r, Ip(ctx), "Mapping uploaded"));
         }).RequireAuthorization("Operate").DisableAntiforgery();
+
+        api.MapPost("/jobs/{id}/mappings", async (HttpContext ctx, string id, AppDb db, OrganizerOptions opt, JobService js) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id); EnsureEditable(j, js);
+            var list = AppDb.Mappings(j);
+            var added = await SaveUploads(ctx, j, list, opt, u);
+            list.AddRange(added);
+            return Results.Ok(ApplyMappings(db, j, list, added, u, r, Ip(ctx), added.Count == 1 ? "Mapping file added" : "Mapping files added"));
+        }).RequireAuthorization("Operate").DisableAntiforgery();
+
+        api.MapDelete("/jobs/{id}/mappings/{mid}", (HttpContext ctx, string id, string mid, AppDb db, JobService js) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id); EnsureEditable(j, js);
+            var list = AppDb.Mappings(j);
+            var m = list.FirstOrDefault(x => x.Id == mid) ?? throw new ApiError("Mapping file not found.", 404);
+            list.Remove(m);
+            var res = ApplyMappings(db, j, list, new List<MappingSource>(), u, r, Ip(ctx), "Mapping file removed", m.OriginalName);
+            try { File.Delete(m.Path); } catch { }
+            return Results.Ok(res);
+        }).RequireAuthorization("Operate");
 
         api.MapPost("/jobs/{id}/mapping/demo", (HttpContext ctx, string id, AppDb db, OrganizerOptions opt, JobService js) =>
         {
@@ -203,18 +221,25 @@ public static class Endpoints
             var demo = Path.Combine(opt.DataPath, "demo", DemoData.MappingFileName);
             if (!File.Exists(demo)) throw new ApiError("Create the demo data first (Dashboard > Load demo data).");
             var dir = Path.Combine(opt.DataPath, "jobs", id); Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, "mapping.xlsx");
+            var path = Path.Combine(dir, "mapping-m1.xlsx");
             File.Copy(demo, path, true);
-            return Results.Ok(SaveMapping(db, j, path, Path.GetFileName(demo), u, r, Ip(ctx)));
+            var m = InspectMapping(path, Path.GetFileName(demo), "m1", u);
+            return Results.Ok(ApplyMappings(db, j, new List<MappingSource> { m }, new List<MappingSource> { m }, u, r, Ip(ctx), "Mapping uploaded"));
         }).RequireAuthorization("Operate");
 
         api.MapPut("/jobs/{id}/config", (HttpContext ctx, string id, JobConfig cfg, AppDb db, JobService js) =>
         {
             var (u, r) = Who(ctx);
             var j = Need(db, id); EnsureEditable(j, js);
-            var info = MappingInfo(j) ?? throw new ApiError("Upload the mapping file first.");
+            var maps = AppDb.Mappings(j);
+            if (maps.Count == 0) throw new ApiError("Upload the mapping file first.");
             cfg.Template = Template.Normalize(cfg.Template ?? "");
-            var errors = MappingFile.ValidateMap(cfg.Columns, cfg, info.Headers);
+            if (cfg.FileColumns != null)
+            {
+                foreach (var k in cfg.FileColumns.Keys.Where(k => maps.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
+                if (cfg.FileColumns.TryGetValue(maps[0].Id, out var firstMap)) cfg.Columns = firstMap;
+            }
+            var errors = ValidateMappings(cfg, maps);
             if (cfg.DuplicateRule == "Overwrite" && !db.LoadSettings().AllowOverwrite) errors.Add("Overwrite is not permitted by the administrator.");
             if (!new[] { "UploadedOn", "YearColumn", "FileNamePattern", "PathPattern" }.Contains(cfg.YearRule)) errors.Add("Unknown year rule.");
             if (!new[] { "Skip", "Rename", "CompareHash", "Overwrite" }.Contains(cfg.DuplicateRule)) errors.Add("Unknown duplicate rule.");
@@ -232,10 +257,10 @@ public static class Endpoints
         {
             var (u, r) = Who(ctx);
             var j = Need(db, id); EnsureEditable(j, js);
-            if (j.Str("mapping_file") == null) throw new ApiError("Upload the mapping file first.");
+            var maps = AppDb.Mappings(j);
+            if (maps.Count == 0) throw new ApiError("Upload the mapping file first.");
             var cfg = AppDb.Cfg(j.Str("config_json"));
-            var info = MappingInfo(j)!;
-            var errors = MappingFile.ValidateMap(cfg.Columns, cfg, info.Headers);
+            var errors = ValidateMappings(cfg, maps);
             if (errors.Count > 0) throw new ApiError(string.Join(" ", errors));
             js.StartScan(id, u, r);
             return Results.Ok(new { started = true });
@@ -268,7 +293,7 @@ public static class Endpoints
                     id = r.Long("id"), status = r.Str("status"), reason = r.Str("reason"), sourceKey = r.Str("source_key"), fileName = r.Str("file_name"),
                     size = r.LongN("source_size"), recordId = r.Str("record_id"), employeeCode = r.Str("employee_code"), employeeName = r.Str("employee_name"),
                     documentType = r.Str("doc_type"), documentName = r.Str("doc_name"), uploadedOn = r.Str("uploaded_on"), year = r.Str("year"),
-                    destKey = r.Str("dest_key"), sourceHash = r.Str("source_hash"), destHash = r.Str("dest_hash"), integrityMethod = r.Str("integrity_method"),
+                    mappingFile = r.Str("mapping_file"), destKey = r.Str("dest_key"), sourceHash = r.Str("source_hash"), destHash = r.Str("dest_hash"), integrityMethod = r.Str("integrity_method"),
                     processedAt = r.Str("processed_at"), processedBy = r.Str("processed_by"), resolvedBy = r.Str("resolved_by"), attempts = r.Long("attempts"),
                     candidates = r.Str("candidates_json") is string cj ? JsonSerializer.Deserialize<List<Candidate>>(cj, AppDb.Json) : null
                 })
@@ -296,7 +321,7 @@ public static class Endpoints
             var (u, r) = Who(ctx);
             var j = Need(db, id);
             if (j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("Ambiguous files can be resolved while the job is awaiting approval.");
-            var (ok, msg) = js.Resolve(id, itemId, body.RecordId ?? "", body.Note, u, r);
+            var (ok, msg) = js.Resolve(id, itemId, body.RecordId ?? "", body.Note, u, r, body.MappingFile);
             if (!ok) throw new ApiError(msg);
             return Results.Ok(new { message = msg });
         }).RequireAuthorization("Operate");
@@ -447,28 +472,91 @@ public static class Endpoints
     private sealed record MappingInfoDto(int HeaderRow, string[] Headers, List<string[]> Preview, int DataRows);
     private static MappingInfoDto? MappingInfo(Row j) => j.Str("mapping_info_json") is string s ? JsonSerializer.Deserialize<MappingInfoDto>(s, AppDb.Json) : null;
 
-    private static object SaveMapping(AppDb db, Row j, string path, string originalName, string user, string role, string? ip)
+    private static readonly string[] MappingExtensions = { ".xlsx", ".csv", ".txt" };
+
+    /// <summary>Saves the uploaded files of a request and inspects each. IDs continue after the job's existing mapping files.</summary>
+    private static async Task<List<MappingSource>> SaveUploads(HttpContext ctx, Row j, List<MappingSource> existing, OrganizerOptions opt, string user)
     {
+        var form = await ctx.Request.ReadFormAsync();
+        if (form.Files.Count == 0) throw new ApiError("Choose a mapping file (.xlsx or .csv).");
+        foreach (var f in form.Files)
+            if (!MappingExtensions.Contains(Path.GetExtension(f.FileName).ToLowerInvariant()))
+                throw new ApiError($"Mapping file must be .xlsx or .csv ({f.FileName}).");
         var id = j.Str("id")!;
+        var dir = Path.Combine(opt.DataPath, "jobs", id); Directory.CreateDirectory(dir);
+        int next = existing.Select(m => int.TryParse(m.Id.TrimStart('m'), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
+        var added = new List<MappingSource>();
+        foreach (var f in form.Files)
+        {
+            var mid = "m" + next++;
+            var path = Path.Combine(dir, $"mapping-{mid}{Path.GetExtension(f.FileName).ToLowerInvariant()}");
+            await using (var fs = File.Create(path)) await f.CopyToAsync(fs);
+            try { added.Add(InspectMapping(path, Path.GetFileName(f.FileName), mid, user)); }
+            catch { try { File.Delete(path); } catch { } throw; }
+        }
+        return added;
+    }
+
+    private static MappingSource InspectMapping(string path, string originalName, string mid, string user)
+    {
         MappingFile.Inspection insp;
         try { insp = MappingFile.Inspect(path); }
-        catch (Exception ex) when (ex is InvalidDataException or System.Xml.XmlException or System.IO.InvalidDataException)
-        { throw new ApiError("The file could not be read as Excel (.xlsx) or CSV: " + ex.Message); }
-        if (insp.Headers.Length == 0) throw new ApiError("No header row found in the file.");
+        catch (Exception ex) when (ex is InvalidDataException or System.Xml.XmlException)
+        { throw new ApiError($"{originalName} could not be read as Excel (.xlsx) or CSV: " + ex.Message); }
+        if (insp.Headers.Length == 0) throw new ApiError($"No header row found in {originalName}.");
         string sha;
         using (var fs = File.OpenRead(path)) sha = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
-        var cfg = AppDb.Cfg(j.Str("config_json"));
-        cfg.Columns = insp.AutoMap;
-        if (cfg.Columns.UploadedOn == null && cfg.Columns.Year != null) cfg.YearRule = "YearColumn";
-        var info = new MappingInfoDto(insp.HeaderRow, insp.Headers, insp.Preview, insp.DataRows);
-        bool wasScanned = j.Str("status") != JobStatus.Draft;
-        db.UpdateJob(id, ("mapping_file", path), ("mapping_original_name", originalName), ("mapping_rows", insp.DataRows), ("mapping_sha256", sha),
-            ("mapping_info_json", AppDb.ToJson(info)), ("config_json", AppDb.ToJson(cfg)), ("status", JobStatus.Draft),
-            ("message", wasScanned ? "Mapping file replaced. Run the scan again." : null));
-        if (wasScanned) { db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id)); db.UpdateJob(id, ("counts_json", null), ("discovered", 0)); }
-        db.Audit(user, role, "Mapping uploaded", id, $"{originalName} · {insp.DataRows:N0} rows · SHA-256 {sha[..12]}…", ip);
-        return new { fileName = originalName, rows = insp.DataRows, headers = insp.Headers, preview = insp.Preview, headerRow = insp.HeaderRow, columns = cfg.Columns, sha256 = sha };
+        return new MappingSource
+        {
+            Id = mid, Path = path, OriginalName = originalName, Rows = insp.DataRows, Sha256 = sha, HeaderRow = insp.HeaderRow,
+            Headers = insp.Headers, Preview = insp.Preview, UploadedBy = user, UploadedAt = DateTime.UtcNow.ToString("o")
+        };
     }
+
+    /// <summary>Stores the job's mapping files, auto-maps the columns of new files, and clears any earlier scan.</summary>
+    private static object ApplyMappings(AppDb db, Row j, List<MappingSource> list, List<MappingSource> added, string user, string role, string? ip, string evt, string? removedName = null)
+    {
+        var id = j.Str("id")!;
+        var cfg = AppDb.Cfg(j.Str("config_json"));
+        cfg.FileColumns ??= new();
+        foreach (var k in cfg.FileColumns.Keys.Where(k => list.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
+        foreach (var m in added) cfg.FileColumns[m.Id] = MappingFile.AutoMap(m.Headers);
+        foreach (var m in list) if (!cfg.FileColumns.ContainsKey(m.Id)) cfg.FileColumns[m.Id] = MappingFile.AutoMap(m.Headers);
+        cfg.Columns = list.Count > 0 ? cfg.FileColumns[list[0].Id] : new ColumnMap();
+        if (list.Count > 0 && list.All(m => cfg.ColumnsFor(m.Id).UploadedOn == null) && cfg.ColumnsFor(list[0].Id).Year != null) cfg.YearRule = "YearColumn";
+        bool wasScanned = j.Str("status") != JobStatus.Draft;
+        db.SaveMappings(id, list);
+        db.UpdateJob(id, ("config_json", AppDb.ToJson(cfg)), ("status", JobStatus.Draft),
+            ("message", wasScanned ? "Mapping files changed. Run the scan again." : null));
+        if (wasScanned) { db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id)); db.UpdateJob(id, ("counts_json", null), ("discovered", 0)); }
+        var detail = removedName != null ? removedName
+            : string.Join("; ", added.Select(m => $"{m.OriginalName} · {m.Rows:N0} rows · SHA-256 {m.Sha256[..12]}…"));
+        db.Audit(user, role, evt, id, detail, ip);
+        var first = list.FirstOrDefault();
+        return new
+        {
+            files = list.Select(MappingDto), rows = list.Sum(m => m.Rows),
+            fileName = first?.OriginalName, headers = first?.Headers, preview = first?.Preview, headerRow = first?.HeaderRow, sha256 = first?.Sha256,
+            columns = cfg.Columns, fileColumns = cfg.FileColumns
+        };
+    }
+
+    private static List<string> ValidateMappings(JobConfig cfg, List<MappingSource> maps)
+    {
+        var errors = new List<string>();
+        foreach (var m in maps)
+        {
+            var e = MappingFile.ValidateMap(cfg.ColumnsFor(m.Id), cfg, m.Headers);
+            errors.AddRange(maps.Count > 1 ? e.Select(x => x.StartsWith("Folder template") || x.StartsWith("Unknown token") || x.StartsWith("Year pattern") ? x : $"{m.OriginalName}: {x}") : e);
+        }
+        return errors.Distinct().ToList();
+    }
+
+    private static object MappingDto(MappingSource m) => new
+    {
+        id = m.Id, fileName = m.OriginalName, rows = m.Rows, sha256 = m.Sha256, uploadedBy = m.UploadedBy, uploadedAt = m.UploadedAt,
+        info = new { headerRow = m.HeaderRow, headers = m.Headers, preview = m.Preview, dataRows = m.Rows }
+    };
 
     private static object JobSummary(Row j) => new
     {
@@ -490,6 +578,7 @@ public static class Endpoints
             sourceText = AppDb.Loc(j.Str("source_json")).Describe(), destinationText = AppDb.Loc(j.Str("dest_json")).Describe(),
             config = AppDb.Cfg(j.Str("config_json")),
             mapping = j.Str("mapping_file") == null ? null : new { fileName = j.Str("mapping_original_name"), rows = j.Long("mapping_rows"), sha256 = j.Str("mapping_sha256"), info = MappingInfo(j) },
+            mappings = AppDb.Mappings(j).Select(MappingDto),
             createdBy = j.Str("created_by"), createdAt = j.Str("created_at"), scanStartedAt = j.Str("scan_started_at"), scanEndedAt = j.Str("scan_ended_at"),
             approvedBy = j.Str("approved_by"), approvedAt = j.Str("approved_at"), startedAt = j.Str("started_at"), endedAt = j.Str("ended_at"),
             progress = new { done = j.Long("progress_done"), total = j.Long("progress_total") },
@@ -503,7 +592,7 @@ public static class Endpoints
     public sealed record PasswordBody(string? CurrentPassword, string? NewPassword);
     public sealed record TestBody(Location? Location, bool NeedWrite);
     public sealed record CreateJobBody(string? Name, Location? Source, Location? Destination);
-    public sealed record ResolveBody(string? RecordId, string? Note);
+    public sealed record ResolveBody(string? RecordId, string? Note, string? MappingFile = null);
     public sealed record ApproveBody(bool Acknowledge);
     public sealed record UserBody(string? UserName, string? DisplayName, string? Role, string? Password, bool? Active);
 }

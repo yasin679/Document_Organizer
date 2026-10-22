@@ -9,13 +9,13 @@ public sealed class Reports(AppDb app)
 {
     private static readonly string[] ValidationHeaders =
     {
-        "Item ID", "Status", "Reason", "Mapping Record ID", "EmployeeCode", "Employee Name", "Document Type", "Document Name",
+        "Item ID", "Status", "Reason", "Mapping Record ID", "Mapping File", "EmployeeCode", "Employee Name", "Document Type", "Document Name",
         "Description", "UploadedOn", "Year", "Source File", "Source Path", "Proposed Destination", "Size (bytes)", "Access Tier"
     };
 
     private static readonly string[] ReconHeaders =
     {
-        "Job ID", "Mapping Record ID", "EmployeeCode", "Employee Name", "Document Type", "Document Name", "Description",
+        "Job ID", "Mapping Record ID", "Mapping File", "EmployeeCode", "Employee Name", "Document Type", "Document Name", "Description",
         "UploadedOn", "Source File", "Source Path", "Destination Path", "Year", "Status", "Error/Exception Reason", "Source Hash",
         "Destination Hash", "Integrity Method", "Source ETag", "Processed Timestamp (UTC)", "Processed By"
     };
@@ -34,14 +34,14 @@ public sealed class Reports(AppDb app)
         string?[] Map(Row r) => recon
             ? new[]
             {
-                jobId, r.Str("record_id"), r.Str("employee_code"), r.Str("employee_name"),
+                jobId, r.Str("record_id"), r.Str("mapping_file"), r.Str("employee_code"), r.Str("employee_name"),
                 r.Str("doc_type"), r.Str("doc_name"), r.Str("description"), r.Str("uploaded_on"), r.Str("file_name"), Join(src, r.Str("source_key")),
                 r.Str("status") == ItemStatus.Processed ? Join(dst, r.Str("dest_key")) : "", r.Str("year"), r.Str("status"), r.Str("reason"),
                 r.Str("source_hash"), r.Str("dest_hash"), r.Str("integrity_method"), r.Str("source_etag"), r.Str("processed_at"), r.Str("processed_by")
             }
             : new[]
             {
-                r.Str("id"), r.Str("status"), r.Str("reason"), r.Str("record_id"), r.Str("employee_code"),
+                r.Str("id"), r.Str("status"), r.Str("reason"), r.Str("record_id"), r.Str("mapping_file"), r.Str("employee_code"),
                 r.Str("employee_name"), r.Str("doc_type"), r.Str("doc_name"), r.Str("description"), r.Str("uploaded_on"), r.Str("year"),
                 r.Str("file_name"), Join(src, r.Str("source_key")), r.Str("dest_key") != null ? Join(dst, r.Str("dest_key")) : "",
                 r.Str("source_size"), r.Str("access_tier")
@@ -82,7 +82,9 @@ public sealed class Reports(AppDb app)
             x.WriteRow(new[] { "Job label", job.Str("name") });
             x.WriteRow(new[] { "Source", src.Describe() });
             x.WriteRow(new[] { "Destination", dst.Describe() });
-            x.WriteRow(new[] { "Mapping file", $"{job.Str("mapping_original_name")} (SHA-256 {job.Str("mapping_sha256")})" });
+            var maps = AppDb.Mappings(job);
+            for (int i = 0; i < maps.Count; i++)
+                x.WriteRow(new[] { maps.Count == 1 ? "Mapping file" : $"Mapping file {i + 1} of {maps.Count}", $"{maps[i].OriginalName} · {maps[i].Rows:N0} rows (SHA-256 {maps[i].Sha256})" });
             var cfg = AppDb.Cfg(job.Str("config_json"));
             x.WriteRow(new[] { "Year rule", cfg.YearRule + (cfg.YearRule is "FileNamePattern" or "PathPattern" ? $" ({cfg.YearPattern})" : "") });
             x.WriteRow(new[] { "Folder template", cfg.Template });

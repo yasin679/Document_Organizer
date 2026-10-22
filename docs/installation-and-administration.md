@@ -417,6 +417,11 @@ The database holds every job, item and audit event. It does not hold any documen
 4. Start the application. The database is upgraded automatically.
 5. Read the Release Notes (DO-RN-07) for configuration changes.
 
+> [!NOTE]
+> **Upgrading from version 2.0 to 2.1**
+>
+> No configuration changes. New database columns are added automatically at start-up; existing jobs keep working with their single mapping file. File name cells listing several files are now split (one entry per file) and `NULL`-style placeholders are treated as empty, so scanning an old job again can change its counts. See the Release Notes.
+
 > [!IMPORTANT]
 > **Upgrading from version 1.0**
 >
@@ -430,7 +435,9 @@ The end-to-end test runs the full flow against a running application:
 node tests/e2e.mjs http://localhost:5080 <admin-password> all
 ```
 
-`local` tests only folders; `cloud` runs a job for every reachable demo connection, each cloud source to a local folder, and Azure to S3 and back; `all` does both. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the application and runs these tests against Azurite and moto on every push.
+`node tests/e2e-mapping.mjs http://localhost:5080 <admin-password>` checks mapping-file handling: several files per job, several file names in one cell, placeholders and repeated records.
+
+For `tests/e2e.mjs`, `local` tests only folders; `cloud` runs a job for every reachable demo connection, each cloud source to a local folder, and Azure to S3 and back; `all` does both. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the application and runs these tests against Azurite and moto on every push.
 
 ## 11 Go-live checklist
 

@@ -201,45 +201,63 @@ async function loadJob(keepScroll) {
   if (prevStatus && prevStatus !== job.status) toast(`Job is now: ${job.status}`);
 }
 
+const maps = job => job.mappings || [];
+const mapSel = job => { const ms = maps(job); return ms.find(m => m.id === S.mapSel) || ms[0]; };
+function previewTable(info) {
+  return `<div class="panel tbl-wrap"><table><thead><tr>${info.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${info.preview.map(r => `<tr>${info.headers.map((_, i) => `<td class="small">${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function fileTabs(job, action) {
+  const ms = maps(job), cur = mapSel(job);
+  if (ms.length < 2) return '';
+  return `<div class="tabs" style="margin-bottom:10px">${ms.map(m => `<button class="tab ${m.id === cur.id ? 'on' : ''}" data-action="${action}" data-mid="${esc(m.id)}">${esc(m.fileName)}</button>`).join('')}</div>`;
+}
+
 function jobMapping(job) {
-  const m = job.mapping;
-  const preview = m && m.info ? `<div><div class="lbl" style="margin-bottom:8px">First rows</div><div class="panel tbl-wrap"><table><thead><tr>${m.info.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${m.info.preview.map(r => `<tr>${m.info.headers.map((_, i) => `<td class="small">${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>` : '';
-  return `<div class="panel"><div class="panel-h"><h2>Mapping file</h2><span class="small muted">.xlsx or .csv · header row and columns are detected automatically</span></div><div class="panel-b">
-    ${m ? `<div class="callout ok"><div><b>${esc(m.fileName)}</b> · ${fmt(m.rows)} data rows · header on row ${m.info.headerRow + 1} · SHA-256 <span class="mono">${esc(m.sha256.slice(0, 16))}…</span></div></div>` : ''}
-    ${canOperate() ? `<div class="row-between"><div class="field" style="flex:1"><label for="mapfile">${m ? 'Replace with another file' : 'Choose the file'}</label><input type="file" id="mapfile" class="input" accept=".xlsx,.csv"></div>
-      <div style="display:flex;gap:8px;align-self:flex-end"><button class="btn primary" data-action="upload-map">Upload</button>${S.meta.demoEnabled ? '<button class="btn" data-action="demo-map">Use demo mapping file</button>' : ''}</div></div>` : ''}
-    ${preview}
-    <div class="callout"><div>Large files are read row by row. The original <span class="mono">ID</span> of every row is kept for reconciliation.</div></div>
-  </div></div><div class="foot"><a class="btn" href="#/jobs">Back to jobs</a>${m ? '<button class="btn primary" data-action="goto-step" data-step="3">Continue to column mapping</button>' : ''}</div>`;
+  const ms = maps(job), cur = mapSel(job), total = ms.reduce((a, m) => a + m.rows, 0);
+  const list = ms.length ? `<div class="tbl-wrap panel"><table><thead><tr><th>Mapping file</th><th>Data rows</th><th>Header row</th><th>SHA-256</th><th></th></tr></thead><tbody>${ms.map(m => `<tr>
+      <td><b>${esc(m.fileName)}</b></td><td class="num">${fmt(m.rows)}</td><td>${m.info.headerRow + 1}</td><td class="mono small">${esc(m.sha256.slice(0, 16))}…</td>
+      <td style="text-align:right">${canOperate() ? `<button class="btn sm" data-action="remove-map" data-mid="${esc(m.id)}">Remove</button>` : ''}</td></tr>`).join('')}
+      ${ms.length > 1 ? `<tr><td><b>Total</b></td><td class="num"><b>${fmt(total)}</b></td><td colspan="3" class="small muted">Records from all files are combined in one scan. Each record keeps its mapping file name in the reports.</td></tr>` : ''}</tbody></table></div>` : '';
+  return `<div class="panel"><div class="panel-h"><h2>Mapping files</h2><span class="small muted">.xlsx or .csv · one or more files · header row and columns are detected automatically</span></div><div class="panel-b">
+    ${list}
+    ${canOperate() ? `<div class="row-between"><div class="field" style="flex:1"><label for="mapfile">${ms.length ? 'Add more mapping files' : 'Choose the file(s)'}</label><input type="file" id="mapfile" class="input" accept=".xlsx,.csv" multiple></div>
+      <div style="display:flex;gap:8px;align-self:flex-end"><button class="btn primary" data-action="upload-map">${ms.length ? 'Add' : 'Upload'}</button>${S.meta.demoEnabled ? '<button class="btn" data-action="demo-map">Use demo mapping file</button>' : ''}</div></div>` : ''}
+    ${cur ? `<div><div class="lbl" style="margin-bottom:8px">First rows${ms.length > 1 ? '' : ''}</div>${fileTabs(job, 'map-tab')}${previewTable(cur.info)}</div>` : ''}
+    <div class="callout"><div>Large files are read row by row. The original <span class="mono">ID</span> of every row is kept for reconciliation. Upload several files at once (hold Ctrl or Shift when choosing) to process several mappings in one job.</div></div>
+  </div></div><div class="foot"><a class="btn" href="#/jobs">Back to jobs</a>${ms.length ? '<button class="btn primary" data-action="goto-step" data-step="3">Continue to column mapping</button>' : ''}</div>`;
 }
 
 function currentCfg(job) { return S.cfgEdit && S.cfgEdit.id === job.id ? S.cfgEdit.cfg : (S.cfgEdit = { id: job.id, cfg: JSON.parse(JSON.stringify(job.config)) }).cfg; }
+function colsFor(cfg, mid) { return (cfg.fileColumns && cfg.fileColumns[mid]) || cfg.columns; }
 
 function jobColumns(job) {
-  const cfg = currentCfg(job);
-  const info = job.mapping.info;
+  const cfg = currentCfg(job), cur = mapSel(job), ms = maps(job);
+  const info = cur.info, cols = colsFor(cfg, cur.id);
   const required = { EmployeeCode: 1, DocumentType: 1, FileName: 1, UploadedOn: cfg.yearRule === 'UploadedOn', Year: cfg.yearRule === 'YearColumn' };
   const key = f => f[0].toLowerCase() + f.slice(1);
   const sample = col => { const i = info.headers.indexOf(col); return i >= 0 && info.preview[0] ? info.preview[0][i] || '' : ''; };
   const rows = S.meta.fields.map(f => {
-    const v = cfg.columns[key(f.field)] || '';
+    const v = cols[key(f.field)] || '';
     return `<tr><td><b>${esc(f.label)}</b></td><td>${required[f.field] ? 'Required' : '<span class="muted">Optional</span>'}</td>
-      <td><select class="input" style="min-width:200px" data-col="${key(f.field)}" aria-label="Column for ${esc(f.label)}"><option value="">— Not mapped —</option>${info.headers.map(h => `<option ${h === v ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></td>
+      <td><select class="input" style="min-width:200px" data-col="${key(f.field)}" data-mid="${esc(cur.id)}" aria-label="Column for ${esc(f.label)}"><option value="">— Not mapped —</option>${info.headers.map(h => `<option ${h === v ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></td>
       <td class="mono">${esc(sample(v))}</td><td>${v ? '<span class="ok-t">✓</span>' : required[f.field] ? '<span class="bad-t">Missing</span>' : ''}</td></tr>`;
   }).join('');
-  return `<div class="panel"><div class="panel-h"><h2>Map columns to application fields</h2><span class="small muted">Detected automatically. Change any column that differs for this client.</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>Application field</th><th>Required</th><th>Column in file</th><th>Sample value</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
+  const missingIn = ms.filter(m => ['employeeCode', 'documentType', 'fileName'].some(k => !colsFor(cfg, m.id)[k])).map(m => m.fileName);
+  return `<div class="panel"><div class="panel-h"><h2>Map columns to application fields</h2><span class="small muted">Detected automatically${ms.length > 1 ? ' for each file' : ''}. Change any column that differs.</span></div>
+    ${ms.length > 1 ? `<div class="panel-b" style="padding-bottom:0">${fileTabs(job, 'col-tab')}${missingIn.length ? `<div class="callout warn"><div>Required columns still missing in: <b>${missingIn.map(esc).join(', ')}</b></div></div>` : ''}</div>` : ''}
+    <div class="tbl-wrap"><table><thead><tr><th>Application field</th><th>Required</th><th>Column in ${esc(cur.fileName)}</th><th>Sample value</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
     <div class="foot"><button class="btn" data-action="goto-step" data-step="2">Back</button><button class="btn primary" data-action="goto-step" data-step="4">Continue to rules</button></div>`;
 }
 
 function exampleDest(job, cfg) {
-  const info = job.mapping.info, p = info.preview[0] || [];
-  const col = c => { const i = info.headers.indexOf(cfg.columns[c]); return i >= 0 ? p[i] || '' : ''; };
+  const cur = maps(job)[0]; if (!cur) return '';
+  const info = cur.info, p = info.preview[0] || [], cols = colsFor(cfg, cur.id);
+  const col = c => { const i = info.headers.indexOf(cols[c]); return i >= 0 ? p[i] || '' : ''; };
   let year = '????';
   if (cfg.yearRule === 'UploadedOn') { const m = String(col('uploadedOn')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
   if (cfg.yearRule === 'YearColumn') { const m = String(col('year')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
-  const file = String(col('fileName')).split(/[\\/]/).pop();
-  const vals = { EmployeeCode: col('employeeCode'), DocumentType: col('documentType'), Year: year, FileName: file, ModuleCode: col('moduleCode'), SubModuleCode: col('subModuleCode'), DocumentName: col('documentName'), EmployeeName: col('employeeName') };
+  const file = String(col('fileName')).split(/[,;]/)[0].trim().split(/[\\/]/).pop();
+  const vals = { EmployeeCode: col('employeeCode'), DocumentType: col('documentType'), Year: year, FileName: file, ModuleCode: col('moduleCode'), SubModuleCode: col('subModuleCode'), DocumentName: col('documentName'), EmployeeName: col('employeeName'), MappingFile: cur.fileName.replace(/\.[^.]+$/, '') };
   return (cfg.template || '').replace(/<(\w+)>/g, '{$1}').replace(/\{(\w+)\}/g, (_, t) => vals[Object.keys(vals).find(k => k.toLowerCase() === t.toLowerCase())] ?? `{${t}}`);
 }
 
@@ -263,6 +281,7 @@ function jobRules(job) {
       <div class="small">1. Exact file name · 2. Relative path + file name, when the mapping includes a path</div>
       <label class="check"><input type="checkbox" data-cfg="caseInsensitiveMatch" ${cfg.caseInsensitiveMatch ? 'checked' : ''}><span>3. Case-insensitive file name</span></label>
       <label class="check"><input type="checkbox" data-cfg="normalizedMatch" ${cfg.normalizedMatch ? 'checked' : ''}><span>4. Normalized file name (spaces, dashes and underscores treated alike)</span></label>
+      <label class="check"><input type="checkbox" data-cfg="splitMultipleFileNames" ${cfg.splitMultipleFileNames !== false ? 'checked' : ''}><span>A File name cell that lists several files (separated by commas or semicolons) becomes one entry per file, for example record ROW-12 becomes ROW-12/1 and ROW-12/2</span></label>
       <div class="hint">When more than one mapping record matches a file, it is marked AMBIGUOUS for a person to resolve.</div>
     </div></div>
     <div class="panel"><div class="panel-h"><h2>If the destination file already exists</h2></div><div class="panel-b" style="gap:8px">
@@ -302,7 +321,7 @@ async function itemsPanel(job, opts) {
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const canResolve = canOperate() && job.status === 'Awaiting approval';
   const rows = data.items.map(it => `<tr>
-      <td class="mono">${esc(it.recordId || '—')}</td>
+      <td class="mono">${esc(it.recordId || '—')}${maps(job).length > 1 && it.mappingFile ? `<div class="small muted" style="font-family:var(--f-body)">${esc(it.mappingFile)}</div>` : ''}</td>
       <td class="mono" title="${esc(it.sourceKey || '')}">${esc(it.sourceKey || it.fileName || '—')}</td>
       <td>${esc(it.employeeCode || '—')}</td><td>${esc(it.documentType || '—')}</td><td>${esc(it.year || '—')}</td>
       <td>${pill(it.status)}</td>
@@ -408,11 +427,11 @@ function renderResolve() {
     <div><div class="eyebrow">Ambiguous match</div><h1 style="font-size:20px">Which record owns this file?</h1></div>
     <div class="path">${esc(it.sourceKey)}</div>
     <div class="callout warn"><div>${it.candidates.length} mapping records name this file. The system will not choose one. Pick the correct record, or leave it flagged so it stays in the exception report.</div></div>
-    ${it.candidates.map(c => `<label class="cand ${pick === c.recordId ? 'on' : ''}"><input type="radio" name="cand" value="${esc(c.recordId)}" ${pick === c.recordId ? 'checked' : ''}><dl>
-      <dt>Record ID</dt><dd class="mono">${esc(c.recordId)}</dd><dt>EmployeeCode</dt><dd>${esc(c.employeeCode || '—')}</dd><dt>Employee name</dt><dd>${esc(c.employeeName || '—')}</dd>
+    ${it.candidates.map((c, i) => `<label class="cand ${pick === String(i) ? 'on' : ''}"><input type="radio" name="cand" value="${i}" ${pick === String(i) ? 'checked' : ''}><dl>
+      <dt>Record ID</dt><dd class="mono">${esc(c.recordId)}</dd>${c.mappingFile ? `<dt>Mapping file</dt><dd>${esc(c.mappingFile)}</dd>` : ''}<dt>EmployeeCode</dt><dd>${esc(c.employeeCode || '—')}</dd><dt>Employee name</dt><dd>${esc(c.employeeName || '—')}</dd>
       <dt>Type</dt><dd>${esc(c.documentType || '—')}</dd><dt>Document name</dt><dd>${esc(c.documentName || '—')}</dd><dt>UploadedOn</dt><dd>${esc(c.uploadedOn || '—')}</dd></dl></label>`).join('')}
     <div class="field"><label for="note">Resolution note (saved to the audit log)</label><input class="input" id="note" placeholder="e.g. Confirmed with client HR by email"></div>
-    <div class="foot" style="margin-top:auto"><button class="btn" data-action="close-layer">Leave flagged</button><button class="btn primary" data-action="do-resolve" ${pick ? '' : 'disabled'}>Assign to record ${esc(pick || '')}</button></div>
+    <div class="foot" style="margin-top:auto"><button class="btn" data-action="close-layer">Leave flagged</button><button class="btn primary" data-action="do-resolve" ${pick ? '' : 'disabled'}>Assign to record ${esc(pick ? it.candidates[+pick].recordId : '')}</button></div>
   </div></div>`;
 }
 function openApprove() {
@@ -505,7 +524,13 @@ document.addEventListener('keyup', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.col && S.job) { currentCfg(S.job).columns[t.dataset.col] = t.value || null; loadJob(true); }
+  if (t.dataset.col && S.job) {
+    const cfg = currentCfg(S.job), mid = t.dataset.mid, first = (maps(S.job)[0] || {}).id;
+    cfg.fileColumns = cfg.fileColumns || {};
+    if (mid) { cfg.fileColumns[mid] = Object.assign({}, colsFor(cfg, mid), { [t.dataset.col]: t.value || null }); if (mid === first) cfg.columns = cfg.fileColumns[mid]; }
+    else cfg.columns[t.dataset.col] = t.value || null;
+    loadJob(true);
+  }
   if (t.name === 'yearRule' || t.name === 'duplicateRule') { currentCfg(S.job)[t.name] = t.value; loadJob(true); }
   if (t.dataset.bind && t.tagName === 'SELECT' && S.draft) { setPath(S.draft, t.dataset.bind, t.value); $('#main').innerHTML = vNew(); }
   if (t.name === 'cand' && S.resolve) { S.resolve.pick = t.value; renderResolve(); }
@@ -550,12 +575,19 @@ document.addEventListener('click', e => {
     }, el),
     'goto-step': () => { S.jobStep[S.job.id] = +el.dataset.step; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; loadJob(); window.scrollTo(0, 0); },
     'upload-map': () => guard(async () => {
-      const f = $('#mapfile').files[0]; if (!f) throw new Error('Choose a file first.');
-      const fd = new FormData(); fd.append('file', f);
-      toast('Uploading and reading the file…');
-      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mapping`, fd);
-      S.cfgEdit = null; toast(`Read ${fmt(r.rows)} rows. Columns detected.`); S.jobStep[S.job.id] = 3; await loadJob();
+      const fs = [...$('#mapfile').files]; if (!fs.length) throw new Error('Choose a file first.');
+      const fd = new FormData(); fs.forEach(f => fd.append('files', f));
+      toast(fs.length > 1 ? `Uploading and reading ${fs.length} files…` : 'Uploading and reading the file…');
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mappings`, fd);
+      S.cfgEdit = null; S.mapSel = null;
+      S.jobStep[S.job.id] = 2; toast(`${r.files.length} mapping file${r.files.length > 1 ? 's' : ''} · ${fmt(r.rows)} rows in total. Columns detected.`); await loadJob();
     }, el),
+    'remove-map': () => guard(async () => {
+      await api('DELETE', `/api/jobs/${encodeURIComponent(S.job.id)}/mappings/${encodeURIComponent(el.dataset.mid)}`);
+      S.cfgEdit = null; S.mapSel = null; toast('Mapping file removed.'); await loadJob();
+    }, el),
+    'map-tab': () => { S.mapSel = el.dataset.mid; loadJob(true); },
+    'col-tab': () => { S.mapSel = el.dataset.mid; loadJob(true); },
     'demo-map': () => guard(async () => {
       const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mapping/demo`);
       S.cfgEdit = null; toast(`Read ${fmt(r.rows)} rows. Columns detected.`); S.jobStep[S.job.id] = 3; await loadJob();
@@ -569,7 +601,7 @@ document.addEventListener('click', e => {
     'page': () => { S.items.page = +el.dataset.page; loadJob(true); },
     'resolve': () => guard(() => openResolve(+el.dataset.id), el),
     'do-resolve': () => guard(async () => {
-      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${S.resolve.it.id}/resolve`, { recordId: S.resolve.pick, note: $('#note').value });
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${S.resolve.it.id}/resolve`, { recordId: S.resolve.it.candidates[+S.resolve.pick].recordId, mappingFile: S.resolve.it.candidates[+S.resolve.pick].mappingFile, note: $('#note').value });
       $('#layer').innerHTML = ''; S.resolve = null; toast(r.message); await loadJob(true);
     }, el),
     'approve': () => { if (!$('#ack').checked) return toast('Tick the confirmation box first.', true); openApprove(); },

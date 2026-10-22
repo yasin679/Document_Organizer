@@ -43,6 +43,50 @@ public sealed class AppDb
             FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)");
         Db.Execute("CREATE INDEX IF NOT EXISTS ix_items_job_status ON items(job_id, status)");
         Db.Execute("CREATE INDEX IF NOT EXISTS ix_items_job_dest ON items(job_id, dest_key)");
+        // v2.1: several mapping files per job; each item remembers which mapping file its record came from
+        AddColumnIfMissing("jobs", "mappings_json", "TEXT");
+        AddColumnIfMissing("items", "mapping_file", "TEXT");
+    }
+
+    private void AddColumnIfMissing(string table, string column, string type)
+    {
+        var cols = Db.Query($"PRAGMA table_info({table})").Select(r => r.Str("name")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!cols.Contains(column)) Db.Execute($"ALTER TABLE {table} ADD COLUMN {column} {type}");
+    }
+
+    // ---------- mapping files ----------
+    /// <summary>The job's mapping files. Jobs created before v2.1 have one file stored in the mapping_* columns.</summary>
+    public static List<MappingSource> Mappings(Row job)
+    {
+        if (job.Str("mappings_json") is string mj && mj.Length > 2)
+            return JsonSerializer.Deserialize<List<MappingSource>>(mj, Json) ?? new();
+        if (job.Str("mapping_file") is not string path) return new();
+        var info = job.Str("mapping_info_json") is string ij ? JsonSerializer.Deserialize<JsonElement>(ij, Json) : default;
+        var m = new MappingSource
+        {
+            Id = "m1", Path = path, OriginalName = job.Str("mapping_original_name") ?? Path.GetFileName(path),
+            Rows = (int)job.Long("mapping_rows"), Sha256 = job.Str("mapping_sha256") ?? ""
+        };
+        if (info.ValueKind == JsonValueKind.Object)
+        {
+            if (info.TryGetProperty("headerRow", out var hr)) m.HeaderRow = hr.GetInt32();
+            if (info.TryGetProperty("headers", out var h)) m.Headers = h.Deserialize<string[]>(Json) ?? Array.Empty<string>();
+            if (info.TryGetProperty("preview", out var pv)) m.Preview = pv.Deserialize<List<string[]>>(Json) ?? new();
+        }
+        return new() { m };
+    }
+
+    /// <summary>Stores the mapping files and keeps the summary columns (first file, total rows) up to date.</summary>
+    public void SaveMappings(string jobId, List<MappingSource> list)
+    {
+        var first = list.FirstOrDefault();
+        UpdateJob(jobId,
+            ("mappings_json", list.Count == 0 ? null : ToJson(list)),
+            ("mapping_file", first?.Path),
+            ("mapping_original_name", list.Count == 0 ? null : string.Join(", ", list.Select(m => m.OriginalName))),
+            ("mapping_rows", list.Sum(m => (long)m.Rows)),
+            ("mapping_sha256", first?.Sha256),
+            ("mapping_info_json", first == null ? null : ToJson(new { headerRow = first.HeaderRow, headers = first.Headers, preview = first.Preview, dataRows = first.Rows })));
     }
 
     // ---------- settings ----------

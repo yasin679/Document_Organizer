@@ -22,8 +22,8 @@ from pypdf import PdfReader, PdfWriter
 DOCS = Path(__file__).resolve().parent.parent
 OUT = DOCS / "pdf"
 PRODUCT = "Document Organizer"
-VERSION = "2.0"
-DATE = "13-Oct-2026"
+VERSION = "2.1"
+DATE = "22-Oct-2026"
 AUTHOR = "Yasin Jariwala"
 CLASSIFICATION = "Public"
 
@@ -35,13 +35,15 @@ DOCUMENTS = [
     ("faq-and-troubleshooting", "DO-FAQ-04_FAQ_and_Troubleshooting"),
     ("technical-design", "DO-TD-05_Technical_Design"),
     ("uat-test-cases", "DO-UAT-06_UAT_Test_Cases"),
-    ("release-notes", "DO-RN-07_Release_Notes_v2.0"),
+    ("release-notes", "DO-RN-07_Release_Notes_v2.1"),
 ]
 
 HISTORY = [
     ("1.0", "06-Oct-2026", AUTHOR, "First release"),
-    ("2.0", DATE, AUTHOR, "General-purpose release: Amazon S3 and S3-compatible storage, copy between providers, "
+    ("2.0", "13-Oct-2026", AUTHOR, "General-purpose release: Amazon S3 and S3-compatible storage, copy between providers, "
                           "container hosting; tenant ID field removed"),
+    ("2.1", DATE, AUTHOR, "Several mapping files per job; File name cells listing several files split into one entry per file; "
+                          "NULL placeholders treated as blank; repeats of missing records reported as MISSING"),
 ]
 
 # Narrower display widths for small screenshots (percentage of the text width).

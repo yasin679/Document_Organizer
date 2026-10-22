@@ -56,7 +56,7 @@ Orange numbered markers on a screenshot point to the item described in the match
 | Job | One run that organizes one set of documents, from a source to a destination, with its own rules and reports. |
 | Source | Where the documents are today: an Azure Blob container, an S3 bucket (each with an optional prefix) or a folder. Only read. |
 | Destination | Where the organized copy is written. Must be separate from the source. |
-| Mapping file | A spreadsheet (`.xlsx` or `.csv`) with one row per document. It says which employee and document type each file belongs to. |
+| Mapping file | A spreadsheet (`.xlsx` or `.csv`) with one row per document. It says which employee and document type each file belongs to. A job can use several mapping files. |
 | Container / bucket | The top-level storage area in Azure Blob Storage (container) or Amazon S3 (bucket). |
 | Prefix | A "virtual folder" inside a container or bucket, for example `hr/`. |
 | Storage connection | A named, pre-configured link to an Azure storage account or an S3 account. Set up by your administrator. |
@@ -201,45 +201,52 @@ After **Load demo data** has been used, a blue bar appears on this page.
 | 2 | **Fill in … demo containers** | Fills in the demo Azure containers. Shown for each Azure connection marked for demo use that was running when the demo data was loaded (for example the Azurite emulator). |
 | 3 | **Fill in … demo buckets** | The same for S3 connections marked for demo use (for example MinIO). |
 
-## 6 Uploading the mapping file
+## 6 Uploading the mapping files
 
-Step 2 asks for the mapping file: a spreadsheet with one row per document, usually the document log exported from the HR system as-is.
+Step 2 asks for the mapping file: a spreadsheet with one row per document, usually the document log exported from the HR system as-is. You can upload **several mapping files** for one job, for example one export per module (HR documents, payroll, onboarding). Their records are combined in one scan, and every record keeps the name of the file it came from.
 
 ![Figure 8: Step 2 before upload](images/08-mapping-before.jpg)
 
 | # | Item | What to do |
 |---|---|---|
 | 1 | Step bar | Shows the eight steps. Completed steps have a tick. You can click steps 2 to 4 to go back while the job is not yet approved. |
-| 2 | **Choose the file** | Select the mapping file (`.xlsx` or `.csv`). Files up to 300 MB are accepted. |
-| 3 | **Upload** | Uploads and reads the file. A 176,000-row Excel file takes about 3 seconds. |
+| 2 | **Choose the file(s)** | Select one or more mapping files (`.xlsx` or `.csv`); hold Ctrl or Shift to select several. Up to 300 MB per upload. |
+| 3 | **Upload** | Uploads and reads the files. A 176,000-row Excel file takes about 3 seconds. |
 | 4 | **Use demo mapping file** | Uses the demo mapping file (practice only). |
 
-After the upload the page shows what was found:
+After the upload the page lists every mapping file:
 
-![Figure 9: Step 2 after upload](images/09-mapping-after.jpg)
+![Figure 9: Step 2 with two mapping files](images/09-mapping-after.jpg)
 
 | # | Item | Description |
 |---|---|---|
-| 1 | File summary | File name, number of data rows, the row where the column headers were found, and the file's SHA-256 fingerprint (recorded in the audit log and reports). |
-| 2 | **Replace with another file** | Choose and upload a different file. Uploading again after a scan clears the scan results. |
-| 3 | First rows | The first five data rows, so you can confirm it is the right file. |
-| 4 | **Continue to column mapping** | Moves to step 3. |
+| 1 | Mapping files | One row per file: name, number of data rows, the row where the column headers were found, and the file's SHA-256 fingerprint (recorded in the audit log and reports). With more than one file, a **Total** row adds them up. |
+| 2 | **Remove** | Removes that mapping file from the job. |
+| 3 | **Add more mapping files** | Choose more files to add to the job. |
+| 4 | **Add** | Uploads and reads the chosen files. Adding or removing a file after a scan clears the scan results. |
+| 5 | First rows | The first five data rows of the selected file. With several files, click a file name to see its rows. |
+| 6 | **Continue to column mapping** | Moves to step 3. |
 
 > [!TIP]
 > **No reformatting needed**
 >
-> The application finds the header row by itself, even if the export has title rows above it. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood.
+> The application finds the header row by itself, even if the export has title rows above it. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood. Cells that only say `NULL`, `N/A`, `NA`, `None` or `-` (common in database exports) are treated as empty.
+
+> [!NOTE]
+> **Several file names in one cell**
+>
+> Some exports list several uploaded files for one document in a single File name cell, separated by commas or semicolons, for example `marksheet_1.jpg,marksheet_2.pdf`. Each name becomes its own entry with its own status: record `ROW-68` becomes `ROW-68/1` and `ROW-68/2`. A cell that is exactly the name of a file in the source (a file name that really contains a comma) is kept whole. You can turn this off in step 4.
 
 ## 7 Mapping the columns
 
-Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name.
+Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name. With several mapping files, each file has its own column mapping, so files with different column names can be combined.
 
-![Figure 10: Step 3, column mapping](images/10-column-mapping.jpg)
+![Figure 10: Step 3, column mapping for the second of two mapping files](images/10-column-mapping.jpg)
 
 | # | Item | Description |
 |---|---|---|
-| 1 | Application field | What the application needs, for example Employee code. |
-| 2 | Required / Optional | Employee code, Document type and File name are always required. Uploaded on is required when the year comes from UploadedOn; Year is required when the year comes from a Year column. |
+| 1 | Mapping file | Shown when the job has several mapping files. Click a file name to see and change its column mapping. A warning lists any file that still has a required column missing. |
+| 2 | Required | Employee code, Document type and File name are always required. Uploaded on is required when the year comes from UploadedOn; Year is required when the year comes from a Year column. |
 | 3 | Column in file | The column used for this field. Choose another column or **— Not mapped —**. |
 | 4 | Sample value | The value in the first data row, to confirm the choice. |
 | 5 | Check | A tick when the field is mapped; **Missing** in red when a required field is not mapped. |
@@ -254,7 +261,7 @@ Step 3 links each column in the mapping file to the field the application needs.
 | Document name | `Name`, `DocumentName`, `Title` | Reports, optional template token. |
 | Description | `Description`, `Remarks` | Reports. |
 | Uploaded on | `UploadedOn`, `UploadDate`, `CreatedOn` | Year (default rule). |
-| File name | `FileName`, `PhysicalFileName`, `FilePath` | Matching mapping records to files. A bare name or a relative path. |
+| File name | `FileName`, `PhysicalFileName`, `FilePath`, `StoredFileName` | Matching mapping records to files. A bare name or a relative path; several names separated by commas or semicolons are split (section 6). |
 | Module / Sub-module | `ModuleCode` / `SubModuleCode` | Reports and optional template tokens. |
 | Year | `Year`, `DocumentYear`, `FinancialYear` | Year (when the Year column rule is chosen). |
 
@@ -270,11 +277,15 @@ Step 4 decides how the year is worked out, how folders are named, how files are 
 | 2 | **Folder template** | How destination paths are built. Default: `{EmployeeCode}/{DocumentType}/{Year}/{FileName}`. Available tokens are listed under the box. It must end with `{FileName}`. |
 | 3 | Example | The destination path the template gives for the first mapping record. It updates as you type. |
 | 4 | Matching options | Exact file name and path matching always apply. **Case-insensitive file name** and **Normalized file name** (spaces, dashes and underscores treated alike) are on by default. |
-| 5 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
-| 6 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
-| 7 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
-| 8 | **Keep object metadata** | Cloud destinations only. Keeps the source object's metadata and adds the job ID, record ID and employee code to each copied file. |
+| 5 | Several file names in one cell | On by default. A File name cell listing several files, separated by commas or semicolons, becomes one entry per file (section 6). |
+| 6 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
+| 7 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
+| 8 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
 | 9 | **Save and start scan** | Saves the rules and starts step 5. |
+
+For cloud destinations an extra switch, **Keep object metadata**, keeps the source object's metadata and adds the job ID, record ID and employee code to each copied file.
+
+The token `{MappingFile}` puts each document under the name of the mapping file it came from (without the extension), for example `{MappingFile}/{EmployeeCode}/{DocumentType}/{FileName}` gives `client-d-payroll-log/E00801/Payslip/e00801_payslip.pdf`. Use it to keep the documents of each mapping file apart.
 
 > [!NOTE]
 > **Changing rules later**
@@ -294,7 +305,7 @@ Step 5 runs by itself. The application reads the mapping file, lists every file 
 
 In testing, a 66,000-row mapping file with 60,000 files was scanned and validated in about 3 seconds from a local folder. Cloud sources take longer because files are listed in pages (5,000 per page on Azure, 1,000 per page on S3).
 
-What is checked: blank employee code, type or file name; a missing or unreadable year; duplicate mapping records; the same file found twice; two files that would land on the same destination path; empty (0-byte) files; files in an archive tier (Azure Archive, S3 Glacier Flexible Retrieval or Deep Archive); and mapping records whose file is not in the source.
+What is checked: blank employee code, type or file name (including placeholders such as `NULL`); a missing or unreadable year; duplicate mapping records; the same file found twice; two files that would land on the same destination path; empty (0-byte) files; files in an archive tier (Azure Archive, S3 Glacier Flexible Retrieval or Deep Archive); and mapping records whose file is not in the source.
 
 ## 10 Reviewing and approving
 
@@ -401,8 +412,8 @@ When files failed, a **Retry N failed** button appears. Retrying copies only the
 
 | Report | Contents |
 |---|---|
-| Validation report (before approval) | Summary sheet (job, source, destination, mapping file and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier. |
-| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by. |
+| Validation report (before approval) | Summary sheet (job, source, destination, every mapping file with its row count and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, mapping file, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier. |
+| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, mapping file, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by. |
 
 ## 13 Audit log
 
@@ -456,10 +467,10 @@ Every source file and every mapping record ends with exactly one status. Only RE
 | READY | The file matched one record and passed every check. | Nothing. It is copied after approval. |
 | PROCESSED | Copied and verified. | Nothing. |
 | UNMAPPED | A file in the source has no matching mapping record. | Check with the client or the data team whether the record is missing from the mapping file. |
-| MISSING | A mapping record has no matching file in the source. | Check whether the file is in another container, bucket, prefix or folder. |
+| MISSING | A mapping record has no matching file in the source. A record that repeats another missing record is also MISSING, and its reason names the first record. | Check whether the file is in another container, bucket, prefix or folder. |
 | AMBIGUOUS | More than one mapping record names the same file. | Resolve it (section 10.3) or leave it flagged. |
-| DUPLICATE | A repeated mapping record, a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
-| INVALID | A validation error: blank employee code, type or file name; no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
+| DUPLICATE | A repeated mapping record whose file was found (the first record is copied), a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
+| INVALID | A validation error: blank employee code, type or file name (including `NULL`); no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
 | FAILED | The copy did not succeed, for example storage was busy or the file changed after the scan. | Click **Retry failed**. |
 
 ## 16 Glossary

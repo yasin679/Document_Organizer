@@ -32,30 +32,69 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         var job = app.GetJob(jobId) ?? throw new InvalidOperationException("Job not found.");
         var cfg = AppDb.Cfg(job.Str("config_json"));
         var src = storage.Create(AppDb.Loc(job.Str("source_json")));
-        var mappingPath = job.Str("mapping_file") ?? throw new InvalidOperationException("Upload a mapping file first.");
+        var mappings = AppDb.Mappings(job);
+        if (mappings.Count == 0) throw new InvalidOperationException("Upload a mapping file first.");
 
-        // 1. Read mapping records
-        progress.Phase = "Reading mapping file";
-        var insp = MappingFile.Inspect(mappingPath);
-        var records = new List<Candidate>(insp.DataRows);
-        foreach (var r in MappingFile.ReadRecords(mappingPath, insp.HeaderRow, insp.Headers, cfg.Columns))
+        // 1. Read the records of every mapping file
+        progress.Phase = mappings.Count == 1 ? "Reading mapping file" : $"Reading {mappings.Count} mapping files";
+        progress.Total = mappings.Sum(m => m.Rows);
+        var records = new List<Candidate>(progress.Total > 0 ? (int)progress.Total : 1000);
+        foreach (var m in mappings)
         {
-            records.Add(r);
-            if (records.Count % 10000 == 0) { progress.Done = records.Count; ct.ThrowIfCancellationRequested(); }
+            var insp = MappingFile.Inspect(m.Path);
+            foreach (var r in MappingFile.ReadRecords(m.Path, insp.HeaderRow, insp.Headers, cfg.ColumnsFor(m.Id), m.OriginalName))
+            {
+                records.Add(r);
+                if (records.Count % 10000 == 0) { progress.Done = records.Count; ct.ThrowIfCancellationRequested(); }
+            }
         }
         progress.Done = records.Count; progress.Total = records.Count;
-        log.LogInformation("{Job}: read {Count} mapping records", jobId, records.Count);
+        log.LogInformation("{Job}: read {Count} mapping records from {Files} file(s)", jobId, records.Count, mappings.Count);
 
-        // 2. Split records: blank FileName, duplicates, keepers
+        // 2. List source (before matching, so a File name cell with several names can be told apart from one file whose name has a comma)
+        progress.Phase = "Listing source documents"; progress.Done = 0; progress.Total = 0;
+        var files = new List<SourceFile>();
+        await foreach (var f in src.ListAsync(ct))
+        {
+            if (Path.GetFileName(f.Key).StartsWith(".docorg-write-test-") || f.Key.Contains(".partial-")) continue;
+            files.Add(f);
+            if (files.Count % 1000 == 0) progress.Done = files.Count;
+        }
+        files.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+        progress.Done = files.Count;
+        log.LogInformation("{Job}: listed {Count} source files", jobId, files.Count);
+        var sourceNames = new HashSet<string>(files.Select(f => f.Name), StringComparer.OrdinalIgnoreCase);
+
+        // 3. One entry per file: "a.pdf,b.pdf" in one record becomes two records (ROW-68/1, ROW-68/2)
+        int split = 0;
+        if (cfg.SplitMultipleFileNames)
+        {
+            var expanded = new List<Candidate>(records.Count);
+            foreach (var r in records)
+            {
+                var parts = SplitFileNames(r.FileName, sourceNames);
+                if (parts == null) { expanded.Add(r); continue; }
+                split++;
+                for (int i = 0; i < parts.Count; i++) expanded.Add(r.CloneWithFile(parts[i], $"{r.RecordId}/{i + 1}"));
+            }
+            records = expanded;
+            if (split > 0) log.LogInformation("{Job}: {Split} mapping records listed several files and were split", jobId, split);
+        }
+        for (int i = 0; i < records.Count; i++) records[i].Seq = i;
+
+        // 4. Blank file names and repeated records. A repeated record is decided after matching:
+        //    DUPLICATE if the first record found its file, otherwise MISSING like the first one.
         var items = new List<ItemRow>();
         var keepers = new List<Candidate>();
+        var repeats = new List<(Candidate Rec, Candidate First)>();
         var firstByKey = new Dictionary<string, Candidate>(StringComparer.Ordinal);
+        bool multi = mappings.Count > 1;
+        string Ref(Candidate c) => multi && c.MappingFile != null ? $"{c.RecordId} in {c.MappingFile}" : c.RecordId;
         foreach (var r in records)
         {
-            if (string.IsNullOrWhiteSpace(r.FileName)) { items.Add(ItemRow.FromRecord(r, ItemStatus.Invalid, $"Blank FileName in mapping record {r.RecordId}.")); continue; }
+            if (string.IsNullOrWhiteSpace(r.FileName)) { items.Add(ItemRow.FromRecord(r, ItemStatus.Invalid, $"Blank FileName in mapping record {Ref(r)}.")); continue; }
             var key = NormKey(r.FileName!) + "|" + (r.EmployeeCode ?? "").ToUpperInvariant() + "|" + (r.DocumentType ?? "").ToUpperInvariant();
-            if (firstByKey.TryGetValue(key, out var first))
-                items.Add(ItemRow.FromRecord(r, ItemStatus.Duplicate, $"Duplicate mapping record: same file, employee and type as record {first.RecordId}."));
+            if (firstByKey.TryGetValue(key, out var first)) repeats.Add((r, first));
             else { firstByKey[key] = r; keepers.Add(r); }
         }
 
@@ -71,60 +110,52 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
             if (cfg.NormalizedMatch) Add(norm, NormKey(name), r);
         }
 
-        // 3. List source
-        progress.Phase = "Listing source documents"; progress.Done = 0; progress.Total = 0;
-        var files = new List<SourceFile>();
-        await foreach (var f in src.ListAsync(ct))
-        {
-            if (Path.GetFileName(f.Key).StartsWith(".docorg-write-test-") || f.Key.Contains(".partial-")) continue;
-            files.Add(f);
-            if (files.Count % 1000 == 0) progress.Done = files.Count;
-        }
-        files.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
-        progress.Done = files.Count;
-        log.LogInformation("{Job}: listed {Count} source files", jobId, files.Count);
-
-        // 4. Match and validate
+        // 5. Match and validate
         progress.Phase = "Matching and validating"; progress.Done = 0; progress.Total = files.Count;
-        var claimed = new Dictionary<string, string>(StringComparer.Ordinal);  // recordId -> source key
-        var touched = new HashSet<string>(StringComparer.Ordinal);            // records referenced by any file (incl. ambiguous)
+        var claimed = new Dictionary<int, string>();      // record Seq -> source key
+        var touched = new HashSet<int>();                  // records referenced by any file (incl. ambiguous)
         var destTaken = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var f in files)
         {
             progress.Done++;
             if ((progress.Done & 4095) == 0) ct.ThrowIfCancellationRequested();
             var cands = Match(f, exact, ci, norm, cfg);
-            foreach (var c in cands) touched.Add(c.RecordId);
+            foreach (var c in cands) touched.Add(c.Seq);
             ItemRow it;
             if (cands.Count == 0)
                 it = ItemRow.FromFile(f, ItemStatus.Unmapped, "No mapping record matches this file name (exact, case-insensitive or normalized).");
             else if (cands.Count > 1)
             {
-                it = ItemRow.FromFile(f, ItemStatus.Ambiguous, $"{cands.Count} mapping records match this file ({string.Join(", ", cands.Take(5).Select(c => c.RecordId))}). Manual resolution required.");
+                it = ItemRow.FromFile(f, ItemStatus.Ambiguous, $"{cands.Count} mapping records match this file ({string.Join(", ", cands.Take(5).Select(Ref))}). Manual resolution required.");
                 it.CandidatesJson = JsonSerializer.Serialize(cands, AppDb.Json);
                 it.EmployeeCode = string.Join(" / ", cands.Select(c => c.EmployeeCode).Distinct().Take(5));
                 it.DocType = string.Join(" / ", cands.Select(c => c.DocumentType).Distinct().Take(3));
+                it.MappingFile = string.Join(" / ", cands.Select(c => c.MappingFile).Distinct().Take(3));
             }
             else
             {
                 var rec = cands[0];
-                if (claimed.TryGetValue(rec.RecordId, out var other))
-                    it = ItemRow.FromFileAndRecord(f, rec, ItemStatus.Duplicate, $"Duplicate physical file: record {rec.RecordId} is already matched to {other}.");
+                if (claimed.TryGetValue(rec.Seq, out var other))
+                    it = ItemRow.FromFileAndRecord(f, rec, ItemStatus.Duplicate, $"Duplicate physical file: record {Ref(rec)} is already matched to {other}.");
                 else
                 {
-                    claimed[rec.RecordId] = f.Key;
+                    claimed[rec.Seq] = f.Key;
                     it = Evaluate(f, rec, cfg, destTaken);
                 }
             }
             items.Add(it);
         }
 
-        // 5. Records with no file
+        // 6. Records with no file, and repeated records
         foreach (var r in keepers)
-            if (!touched.Contains(r.RecordId))
+            if (!touched.Contains(r.Seq))
                 items.Add(ItemRow.FromRecord(r, ItemStatus.Missing, "Mapping exists but no source file with this name was found."));
+        foreach (var (r, first) in repeats)
+            items.Add(touched.Contains(first.Seq)
+                ? ItemRow.FromRecord(r, ItemStatus.Duplicate, $"Duplicate mapping record: same file, employee and type as record {Ref(first)}.")
+                : ItemRow.FromRecord(r, ItemStatus.Missing, $"Mapping exists but no source file with this name was found (repeats record {Ref(first)}, which is also missing)."));
 
-        // 6. Persist
+        // 7. Persist
         progress.Phase = "Saving results"; progress.Done = 0; progress.Total = items.Count;
         app.Db.InTransaction(() =>
         {
@@ -134,6 +165,20 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         });
         app.RefreshCounts(jobId);
         log.LogInformation("{Job}: saved {Count} items", jobId, items.Count);
+    }
+
+    /// <summary>
+    /// Returns the separate file names when a File name cell lists several files, or null when it is one file.
+    /// A cell that is itself the name of a source file (a file name containing a comma) is never split.
+    /// </summary>
+    public static List<string>? SplitFileNames(string? fileName, HashSet<string> sourceNames)
+    {
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.IndexOfAny(MappingFile.FileNameSeparators) < 0) return null;
+        if (sourceNames.Contains(LastSegment(fileName))) return null;
+        var parts = fileName.Split(MappingFile.FileNameSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(p => !MappingFile.Placeholders.Contains(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return parts.Count > 1 ? parts : parts.Count == 1 && parts[0] != fileName.Trim() ? parts : null;
     }
 
     private static List<Candidate> Match(SourceFile f, Dictionary<string, List<Candidate>> exact, Dictionary<string, List<Candidate>> ci,
@@ -181,19 +226,19 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
 public sealed class ItemRow
 {
     public string? SourceKey, FileName, SourceEtag, SourceMd5, AccessTier, RecordId, EmployeeCode, EmployeeName, DocType, DocName,
-        Description, UploadedOn, ModuleCode, SubModuleCode, Year, DestKey, Status, Reason, CandidatesJson;
+        Description, UploadedOn, ModuleCode, SubModuleCode, Year, DestKey, Status, Reason, CandidatesJson, MappingFile;
     public long? SourceSize;
 
     public const string InsertSql = @"INSERT INTO items(job_id,source_key,file_name,source_size,source_etag,source_md5,access_tier,record_id,employee_code,employee_name,
-        doc_type,doc_name,description,uploaded_on,module_code,submodule_code,year,dest_key,status,reason,candidates_json)
-        VALUES(@job,@sk,@fn,@sz,@et,@md5,@tier,@rid,@emp,@ename,@type,@dname,@desc,@up,@mod,@sub,@year,@dest,@st,@reason,@cand)";
+        doc_type,doc_name,description,uploaded_on,module_code,submodule_code,year,dest_key,status,reason,candidates_json,mapping_file)
+        VALUES(@job,@sk,@fn,@sz,@et,@md5,@tier,@rid,@emp,@ename,@type,@dname,@desc,@up,@mod,@sub,@year,@dest,@st,@reason,@cand,@mf)";
 
     public (string, object?)[] Args(string jobId) => new (string, object?)[]
     {
         ("job", jobId), ("sk", SourceKey), ("fn", FileName), ("sz", SourceSize), ("et", SourceEtag), ("md5", SourceMd5), ("tier", AccessTier),
         ("rid", RecordId), ("emp", EmployeeCode), ("ename", EmployeeName), ("type", DocType), ("dname", DocName), ("desc", Description),
         ("up", UploadedOn), ("mod", ModuleCode), ("sub", SubModuleCode), ("year", Year), ("dest", DestKey),
-        ("st", Status), ("reason", Reason), ("cand", CandidatesJson)
+        ("st", Status), ("reason", Reason), ("cand", CandidatesJson), ("mf", MappingFile)
     };
 
     public static ItemRow FromFile(SourceFile f, string status, string? reason) => new()
@@ -206,7 +251,7 @@ public sealed class ItemRow
     {
         FileName = r.FileName, RecordId = r.RecordId, EmployeeCode = r.EmployeeCode, EmployeeName = r.EmployeeName, DocType = r.DocumentType,
         DocName = r.DocumentName, Description = r.Description, UploadedOn = r.UploadedOn, ModuleCode = r.ModuleCode,
-        SubModuleCode = r.SubModuleCode, Status = status, Reason = reason
+        SubModuleCode = r.SubModuleCode, MappingFile = r.MappingFile, Status = status, Reason = reason
     };
 
     public static ItemRow FromFileAndRecord(SourceFile f, Candidate r, string status, string? reason)

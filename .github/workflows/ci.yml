@@ -41,7 +41,9 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://localhost:5080/healthz && break; sleep 1; done
 
       - name: End-to-end tests (local folder, Azure Blob, S3, cross-provider)
-        run: node tests/e2e.mjs http://localhost:5080 'Ci-Test-Pass-2026!' all
+        run: |
+          node tests/e2e.mjs http://localhost:5080 'Ci-Test-Pass-2026!' all
+          node tests/e2e-mapping.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
 
       - name: App log
         if: always()

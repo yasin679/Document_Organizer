@@ -107,13 +107,13 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
     }
 
     /// <summary>Assigns an AMBIGUOUS file to one of its candidate records.</summary>
-    public (bool ok, string message) Resolve(string jobId, long itemId, string recordId, string? note, string user, string role)
+    public (bool ok, string message) Resolve(string jobId, long itemId, string recordId, string? note, string user, string role, string? mappingFile = null)
     {
         var item = app.Db.QueryOne("SELECT * FROM items WHERE id=@id AND job_id=@j", ("id", itemId), ("j", jobId));
         if (item == null) return (false, "Item not found.");
         if (item.Str("status") != ItemStatus.Ambiguous) return (false, "Only ambiguous items can be resolved.");
         var cands = JsonSerializer.Deserialize<List<Candidate>>(item.Str("candidates_json") ?? "[]", AppDb.Json) ?? new();
-        var rec = cands.FirstOrDefault(c => c.RecordId == recordId);
+        var rec = cands.FirstOrDefault(c => c.RecordId == recordId && (mappingFile == null || c.MappingFile == mappingFile)) ?? cands.FirstOrDefault(c => c.RecordId == recordId);
         if (rec == null) return (false, "That record is not one of the candidates for this file.");
         var cfg = AppDb.Cfg(app.GetJob(jobId)!.Str("config_json"));
         var f = new SourceFile { Key = item.Str("source_key")!, Size = item.Long("source_size"), ETag = item.Str("source_etag"), ContentMd5 = item.Str("source_md5"), AccessTier = item.Str("access_tier") };
@@ -130,11 +130,11 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
         if (claimedBy != null && ev.Status == ItemStatus.Ready) { ev.Status = ItemStatus.Duplicate; ev.Reason = $"Record {recordId} is already matched to {claimedBy.Str("source_key")}."; }
 
         app.Db.Execute(@"UPDATE items SET status=@st, reason=@reason, record_id=@rid, employee_code=@emp, employee_name=@ename, doc_type=@type, doc_name=@dname,
-            description=@desc, uploaded_on=@up, module_code=@mod, submodule_code=@sub, year=@year, dest_key=@dest,
+            description=@desc, uploaded_on=@up, module_code=@mod, submodule_code=@sub, mapping_file=@mf, year=@year, dest_key=@dest,
             resolved_by=@by, resolution_note=@note WHERE id=@id",
             ("st", ev.Status), ("reason", ev.Reason ?? $"Resolved manually to record {recordId} by {user}."), ("rid", rec.RecordId), ("emp", rec.EmployeeCode),
             ("ename", rec.EmployeeName), ("type", rec.DocumentType), ("dname", rec.DocumentName), ("desc", rec.Description), ("up", rec.UploadedOn),
-            ("mod", rec.ModuleCode), ("sub", rec.SubModuleCode), ("year", ev.Year), ("dest", ev.DestKey),
+            ("mod", rec.ModuleCode), ("sub", rec.SubModuleCode), ("mf", rec.MappingFile), ("year", ev.Year), ("dest", ev.DestKey),
             ("by", user), ("note", note), ("id", itemId));
         app.RefreshCounts(jobId);
         app.Audit(user, role, "Ambiguity resolved", jobId, $"{f.Key} assigned to record {recordId}. Result: {ev.Status}. Note: {note}");

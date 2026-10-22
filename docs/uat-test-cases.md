@@ -12,7 +12,7 @@ landscape: true
 
 ### 1.1 Purpose
 
-These test cases confirm that Document Organizer v2.0 works on your own machines, in your own hosting, and against your own Azure and AWS accounts before it is used with real documents. They cover every screen, every status, all three storage types, copying between providers, security controls and recovery after interruption.
+These test cases confirm that Document Organizer v2.1 works on your own machines, in your own hosting, and against your own Azure and AWS accounts before it is used with real documents. They cover every screen, every status, all three storage types, copying between providers, security controls and recovery after interruption.
 
 ### 1.2 How to use this document
 
@@ -26,7 +26,7 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | Item | Value |
 |---|---|
 | Machine | The machine or hosting platform you will use in production |
-| Application | Document Organizer v2.0, for example http://localhost:5080 or your HTTPS address |
+| Application | Document Organizer v2.1, for example http://localhost:5080 or your HTTPS address |
 | Users | `admin` (Administrator), `uat.operator` (Operator), `uat.viewer` (Viewer) |
 | Local data | Demo data (Dashboard > **Load demo data**) |
 | Azure test account | A non-production storage account with containers `uat-source` and `uat-organized` |
@@ -92,6 +92,9 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | UAT-23 | M | Auto column mapping | Continue to step 3 | All required fields mapped with a tick; sample values look right | |
 | UAT-24 | H | Change a column | Set Document type to another column, then back | Sample value changes; required field shows **Missing** when unmapped | |
 | UAT-25 | M | Your own mapping file | Upload a real export from your source system (or `samples/sample-mapping.csv`) in a separate draft job | Header row and columns detected; required fields mapped or easy to map | |
+| UAT-25a | M | Several mapping files | In a draft job, select two exports at once (for example HR documents and payroll) and **Upload** | Both listed with their rows and fingerprints, plus a Total row | |
+| UAT-25b | H | Different column names | Use a second file whose columns are named differently (for example `EmpCode`, `StoredFileName`); open step 3 and click its name | Each file has its own column mapping; required fields mapped for both | |
+| UAT-25c | H | Remove and add | **Remove** one file, then add it again with **Add more mapping files** | List updates; after a scan, changing the files clears the results | |
 
 ## 6 Rules and scan
 
@@ -102,6 +105,10 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | UAT-28 | M | Reference example path | Search tab **Everything** for `e00879_final` | Destination `E00879/Medical Certificate/2021/e00879_final_certificate.pdf` | |
 | UAT-29 | H | Template example | In step 4, change template to `{DocumentType}/{EmployeeCode}/{FileName}` | Example path updates; revert before saving | |
 | UAT-30 | H | Unknown token | Enter template `{Employee}/{FileName}` and save | Error naming the unknown token | |
+| UAT-30a | M | Several files in one cell | Use a mapping file where one File name cell lists two existing files separated by a comma (for example `a.pdf,b.pdf`); scan | Two entries `ROW-n/1` and `ROW-n/2`, both READY; both copied | |
+| UAT-30b | M | Placeholder file name | Put `NULL` in a File name cell; scan | That record is INVALID "Blank FileName", not MISSING | |
+| UAT-30c | M | Repeat of a missing record | Two identical rows (same file, employee, type) naming a file that is not in the source; scan | Both MISSING; the second names the first; neither is DUPLICATE | |
+| UAT-30d | H | `{MappingFile}` token | With two mapping files, template `{MappingFile}/{EmployeeCode}/{FileName}` | Example path and destinations start with the mapping file name | |
 | UAT-31 | M | Overwrite needs admin | As operator, open duplicate rule options | Overwrite is greyed out with "Not permitted by the administrator" unless an admin enabled it | |
 
 ## 7 Review, resolve and approve
@@ -131,7 +138,7 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 
 | ID | Pri | Test | Steps | Expected result | P/F |
 |---|---|---|---|---|---|
-| UAT-45 | M | Reconciliation report | Step 8 > **Reconciliation Excel** | Summary and item sheets; every item has status, reason, paths, hashes, times | |
+| UAT-45 | M | Reconciliation report | Step 8 > **Reconciliation Excel** | Summary lists every mapping file; item sheet has status, reason, mapping file, paths, hashes, times | |
 | UAT-46 | M | Integrity evidence | In the report, check the hash columns for processed items | Source and destination hashes equal | |
 | UAT-47 | M | Audit trail | Audit log, search by Job ID | Creation, mapping upload, rules, scan, resolution, approval, processing and export all listed | |
 

@@ -23,6 +23,12 @@ public static class MappingFile
         ("Year", "Year", new[] { "Year", "DocumentYear", "DocYear", "FinancialYear" }),
     };
 
+    /// <summary>Cell values that mean "no value" in database exports (for example a literal NULL).</summary>
+    public static readonly HashSet<string> Placeholders = new(StringComparer.OrdinalIgnoreCase) { "NULL", "N/A", "NA", "#N/A", "NONE", "NIL", "-", "--", "(null)" };
+
+    /// <summary>Separators between several file names in one File name cell.</summary>
+    public static readonly char[] FileNameSeparators = { ',', ';', '\n', '\r' };
+
     private static string Norm(string s) => Regex.Replace(s ?? "", @"[\s_\-\.]", "").ToLowerInvariant();
 
     public static IEnumerable<string[]> Rows(string path) =>
@@ -101,7 +107,7 @@ public static class MappingFile
     }
 
     /// <summary>Reads all mapping records using the configured column map.</summary>
-    public static IEnumerable<Candidate> ReadRecords(string path, int headerRow, string[] headers, ColumnMap map)
+    public static IEnumerable<Candidate> ReadRecords(string path, int headerRow, string[] headers, ColumnMap map, string? mappingFileName = null)
     {
         int Idx(string? col) => string.IsNullOrWhiteSpace(col) ? -1 : Array.IndexOf(headers, col);
         int iId = Idx(map.RecordId), iEmp = Idx(map.EmployeeCode), iName = Idx(map.EmployeeName), iType = Idx(map.DocumentType),
@@ -113,14 +119,19 @@ public static class MappingFile
             rowNum++;
             if (rowNum - 1 <= headerRow) continue;
             if (row.All(string.IsNullOrWhiteSpace)) continue;
-            string? V(int i) => i >= 0 && i < row.Length ? (string.IsNullOrWhiteSpace(row[i]) ? null : row[i].Trim()) : null;
+            string? V(int i)
+            {
+                if (i < 0 || i >= row.Length || string.IsNullOrWhiteSpace(row[i])) return null;
+                var v = row[i].Trim();
+                return Placeholders.Contains(v) ? null : v;
+            }
             yield return new Candidate
             {
                 RowNumber = rowNum,
                 RecordId = V(iId) ?? $"ROW-{rowNum}",
                 EmployeeCode = V(iEmp), EmployeeName = V(iName), DocumentType = V(iType), DocumentName = V(iDoc),
                 Description = V(iDesc), UploadedOn = V(iUp), FileName = V(iFile),
-                ModuleCode = V(iMod), SubModuleCode = V(iSub), Year = V(iYear)
+                ModuleCode = V(iMod), SubModuleCode = V(iSub), Year = V(iYear), MappingFile = mappingFileName
             };
         }
     }
@@ -186,7 +197,7 @@ public static class YearRules
 
 public static class Template
 {
-    public static readonly string[] Tokens = { "EmployeeCode", "DocumentType", "Year", "FileName", "ModuleCode", "SubModuleCode", "DocumentName", "EmployeeName" };
+    public static readonly string[] Tokens = { "EmployeeCode", "DocumentType", "Year", "FileName", "ModuleCode", "SubModuleCode", "DocumentName", "EmployeeName", "MappingFile" };
 
     public static bool IsValid(string? template, out string? error)
     {
@@ -219,6 +230,7 @@ public static class Template
                 "submodulecode" => r.SubModuleCode ?? "",
                 "documentname" => r.DocumentName ?? "",
                 "employeename" => r.EmployeeName ?? "",
+                "mappingfile" => r.MappingFile == null ? "" : Path.GetFileNameWithoutExtension(r.MappingFile),
                 _ => ""
             });
             return Sanitize(v, isFile);
