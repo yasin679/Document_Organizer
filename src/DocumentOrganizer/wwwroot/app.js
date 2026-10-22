@@ -463,7 +463,7 @@ function buildTree(t) {
 }
 
 function jobProcess(job) {
-  const c = job.counts, p = job.progress, r = job.copyResult || {};
+  const c = job.counts, p = job.progress, r = job.copyResult || { processed: c.PROCESSED, skipped: c.DUPLICATE, failed: c.FAILED };
   const pct = p.total ? 100 * p.done / p.total : 0;
   const running = job.status === 'Processing';
   const left = Math.max(0, (p.total || 0) - (p.done || 0));
