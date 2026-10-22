@@ -319,6 +319,50 @@ async function scenarioE() {
   check(count(j.counts, 'READY') === 2 && count(j.counts, 'UNMAPPED') === 1, `only the data sheet is used (${JSON.stringify(j.counts)})`);
 }
 
+async function scenarioF() {
+  console.log('\n== F  Rule for a file that matches several records: flag, or keep all');
+  const src = source('F', ['amb.pdf', 'x.pdf', 'a.pdf']);
+  const csv = ['ID,EmployeeCode,Type,UploadedOn,FileName',
+    'R1,E1,Offer,2024-01-01,amb.pdf', 'R2,E2,PAN,2023-01-01,amb.pdf', 'R3,E3,Form16,2022-01-01,amb.pdf',
+    'R4,E4,Offer,2024-01-01,x.pdf', 'R5,E4,PAN,2024-01-01,x.pdf', 'R6,E6,Offer,2024-01-01,a.pdf'].join('\r\n');
+  const out = join(root, 'F-out');
+  const { id } = await call('POST', '/api/jobs', { name: 'Scenario F', source: { type: 'Local', path: src }, destination: { type: 'Local', path: out } });
+  await call('POST', `/api/jobs/${id}/mappings`, form([['log.csv', csv]]));
+  let job = await call('GET', `/api/jobs/${id}`);
+  check(job.config.ambiguousRule === 'Flag', 'default rule: flag as ambiguous');
+  let j = await scan(id);
+  check(count(j.counts, 'AMBIGUOUS') === 2 && count(j.counts, 'READY') === 1 && j.discovered === 3, `flag: 2 ambiguous files (${JSON.stringify(j.counts)})`);
+  const bad = await fails(call('PUT', `/api/jobs/${id}/config`, { ...job.config, ambiguousRule: 'Guess' }));
+  check(bad?.status === 400, 'an unknown rule is refused');
+  // keep all, with a template that puts two of x.pdf's records on the same path
+  await call('PUT', `/api/jobs/${id}/config`, { ...job.config, ambiguousRule: 'KeepAll', template: '{EmployeeCode}/{FileName}' });
+  j = await scan(id); let all = await items(id);
+  const x = all.filter(i => i.fileName === 'x.pdf');
+  check(x.length === 2 && x.filter(i => i.status === 'READY').length === 1 && x.some(i => i.status === 'DUPLICATE' && /Destination path collision/.test(i.reason)),
+    'keep all: two records that give the same path keep one copy, the other is DUPLICATE');
+  // excluding one copy of a file is remembered for that copy only
+  await call('POST', `/api/jobs/${id}/items/exclude`, { ids: [x.find(i => i.status === 'DUPLICATE').id], note: 'Second copy not needed' });
+  await scan(id);
+  const x2 = (await items(id)).filter(i => i.fileName === 'x.pdf');
+  check(x2.filter(i => i.status === 'EXCLUDED').length === 1 && x2.filter(i => i.status === 'READY').length === 1, 'exclusion of one copy is re-applied to that copy only after a new scan');
+  // keep all with the default template: every record gets its copy
+  await call('PUT', `/api/jobs/${id}/config`, { ...job.config, ambiguousRule: 'KeepAll' });
+  j = await scan(id); all = await items(id);
+  check(count(j.counts, 'READY') === 6 && count(j.counts, 'AMBIGUOUS') === 0 && j.discovered === 3, `keep all: one item per record, files still counted once (${JSON.stringify(j.counts)}, ${j.discovered} files)`);
+  const amb = all.filter(i => i.fileName === 'amb.pdf');
+  check(amb.length === 3 && amb.every(i => i.status === 'READY' && /kept for each/.test(i.reason)) && new Set(amb.map(i => i.destKey)).size === 3,
+    `each record has its own destination: ${amb.map(i => i.destKey).join(' | ')}`);
+  await call('POST', `/api/jobs/${id}/approve`, { acknowledge: true });
+  const done = await waitFor(id, ['Completed', 'Completed with exceptions', 'Paused']);
+  check(count(done.counts, 'PROCESSED') === 6 && count(done.counts, 'FAILED') === 0, `copied 6 (${JSON.stringify(done.counts)})`);
+  check(['E1/Offer/2024', 'E2/PAN/2023', 'E3/Form16/2022'].every(p => existsSync(join(out, ...p.split('/'), 'amb.pdf'))), 'the file is at each record\'s destination');
+  const rep = await (await call('GET', `/api/jobs/${id}/report?kind=reconciliation&format=csv`, undefined, true)).text();
+  const rows = rep.trim().split('\r\n').filter(l => l.includes('amb.pdf') && l.includes(',PROCESSED,'));
+  check(rows.length === 3 && ['R1', 'R2', 'R3'].every(r => rows.some(l => l.includes(`,${r},`))), 'the final report has one row per record for the file');
+  const xl = await call('GET', `/api/jobs/${id}/report?kind=reconciliation&format=xlsx`, undefined, true);
+  check(xl.ok && (await xl.arrayBuffer()).byteLength > 1000, 'the Excel report downloads');
+}
+
 (async () => {
   try {
     await call('POST', '/api/auth/login', { userName: 'admin', password });
@@ -326,6 +370,7 @@ async function scenarioE() {
     await scenarioB();
     await scenarioC();
     await scenarioE();
+    await scenarioF();
     if (process.env.SCEN_CLOUD !== '0') await scenarioD();
   } catch (e) { console.error('ERROR', e.stack || e.message); failures++; }
   console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');

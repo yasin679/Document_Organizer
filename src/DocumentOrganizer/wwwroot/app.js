@@ -6,12 +6,13 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const fmt = n => (n ?? 0).toLocaleString('en-IN');
 const whenShort = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
 const when = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED'];
-const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed' };
+const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED', 'EXCLUDED'];
+const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed', EXCLUDED: 'Excluded' };
+const EXCLUDABLE = ['UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED'];
 const pill = s => `<span class="pill s-${esc(s)}">${esc(s)}</span>`;
 const jobPill = s => { const c = s === 'Completed' ? 'j-Completed' : s === 'Completed with exceptions' ? 'j-exceptions' : s === 'Awaiting approval' ? 'j-Awaiting' : 'j-' + (s || '').split(' ')[0]; return `<span class="pill ${c}">${esc(s)}</span>`; };
 
-const S = { me: null, meta: null, job: null, jobStep: {}, items: { status: 'EXCEPTIONS', q: '', page: 1 }, poll: null, demo: null, draft: null, mapping: {} };
+const S = { me: null, meta: null, job: null, jobStep: {}, items: { status: 'EXCEPTIONS', q: '', page: 1, group: '' }, sel: new Set(), poll: null, demo: null, draft: null, mapping: {} };
 const canOperate = () => S.me && S.me.role !== 'Viewer';
 const isAdmin = () => S.me && S.me.role === 'Administrator';
 
@@ -288,7 +289,10 @@ function jobRules(job) {
       <label class="check"><input type="checkbox" data-cfg="caseInsensitiveMatch" ${cfg.caseInsensitiveMatch ? 'checked' : ''}><span>3. Case-insensitive file name</span></label>
       <label class="check"><input type="checkbox" data-cfg="normalizedMatch" ${cfg.normalizedMatch ? 'checked' : ''}><span>4. Normalized file name (spaces, dashes and underscores treated alike)</span></label>
       <label class="check"><input type="checkbox" data-cfg="splitMultipleFileNames" ${cfg.splitMultipleFileNames !== false ? 'checked' : ''}><span>A File name cell that lists several files (separated by commas or semicolons) becomes one entry per file, for example record ROW-12 becomes ROW-12/1 and ROW-12/2</span></label>
-      <div class="hint">When more than one mapping record matches a file, it is marked AMBIGUOUS for a person to resolve.</div>
+    </div></div>
+    <div class="panel"><div class="panel-h"><h2>When a file matches several mapping records</h2></div><div class="panel-b" style="gap:8px">
+      ${r('ambiguousRule', 'Flag', 'Flag as ambiguous', 'Default. The file is AMBIGUOUS until a person picks the record in step 6.', cfg.ambiguousRule || 'Flag')}
+      ${r('ambiguousRule', 'KeepAll', 'Keep all', 'The file is copied once for every record that names it, each to its own destination, and each copy is its own row in the reports. Records that would land on the same path are reported as DUPLICATE.', cfg.ambiguousRule || 'Flag')}
     </div></div>
     <div class="panel"><div class="panel-h"><h2>If the destination file already exists</h2></div><div class="panel-b" style="gap:8px">
       ${r('duplicateRule', 'Skip', 'Skip and report', 'Default. Nothing is overwritten.', cfg.duplicateRule)}
@@ -318,26 +322,77 @@ function jobScan(job) {
   </div></div>`;
 }
 
+function canExclude(job) { return canOperate() && !job.running && ['Awaiting approval', 'Paused', 'Completed', 'Completed with exceptions'].includes(job.status); }
+function itemsState() { if (!S.sel) S.sel = new Set(); return S.items; }
+function resetItems(status) { S.items = { status: status || 'EXCEPTIONS', q: '', page: 1, group: '' }; S.sel = new Set(); }
+
 async function itemsPanel(job, opts) {
-  const st = S.items;
-  const qs = new URLSearchParams({ status: st.status, q: st.q, page: st.page, pageSize: 50 });
-  const data = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/items?${qs}`);
+  const st = itemsState();
+  const qs = new URLSearchParams({ status: st.status, q: st.q, page: st.page, pageSize: 50, group: st.group || '' });
+  const jid = encodeURIComponent(job.id);
+  const showingExcluded = st.status === 'EXCLUDED';
+  const exceptionView = st.status === 'EXCEPTIONS' || EXCLUDABLE.includes(st.status);
+  const [data, reasons] = await Promise.all([
+    api('GET', `/api/jobs/${jid}/items?${qs}`),
+    exceptionView || showingExcluded ? api('GET', `/api/jobs/${jid}/reasons${showingExcluded ? '?excluded=true' : ''}`) : Promise.resolve([])]);
   const c = job.counts;
-  const tabs = [['EXCEPTIONS', 'All exceptions'], ...opts.tabs.map(s => [s, LABEL[s]]), ['ALL', 'Everything']];
+  const tabs = [['EXCEPTIONS', 'All exceptions'], ...opts.tabs.map(s => [s, LABEL[s]]), ['EXCLUDED', 'Excluded'], ['ALL', 'Everything']];
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const canResolve = canOperate() && job.status === 'Awaiting approval';
+  const bulk = canExclude(job) && (exceptionView || showingExcluded);
+  const selectable = it => showingExcluded ? it.status === 'EXCLUDED' : EXCLUDABLE.includes(it.status);
+  const pageIds = data.items.filter(selectable).map(it => it.id);
+  const allOnPage = pageIds.length > 0 && pageIds.every(id => S.sel.has(id));
+  const why = it => it.status === 'EXCLUDED'
+    ? `<span class="muted">Was ${esc(it.excludedFrom || '')}: ${esc(it.reason || '')}</span><br><b>Excluded</b> by ${esc(it.excludedBy || '')} · ${when(it.excludedAt)} · ${esc(it.exclusionNote || '')}`
+    : it.status === 'READY' || it.status === 'PROCESSED' ? `<span class="mono">${esc(it.destKey || '')}</span>${it.reason ? '<br><span class="muted">' + esc(it.reason) + '</span>' : ''}` : esc(it.reason || '');
   const rows = data.items.map(it => `<tr>
+      ${bulk ? `<td>${selectable(it) ? `<input type="checkbox" data-sel="${it.id}" ${S.sel.has(it.id) ? 'checked' : ''} aria-label="Select item ${it.id}">` : ''}</td>` : ''}
       <td class="mono">${esc(it.recordId || '—')}${maps(job).length > 1 && it.mappingFile ? `<div class="small muted" style="font-family:var(--f-body)">${esc(it.mappingFile)}</div>` : ''}</td>
       <td class="mono" title="${esc(it.sourceKey || '')}">${esc(it.sourceKey || it.fileName || '—')}</td>
       <td>${esc(it.employeeCode || '—')}</td><td>${esc(it.documentType || '—')}</td><td>${esc(it.year || '—')}</td>
       <td>${pill(it.status)}</td>
-      <td class="small wrap">${it.status === 'READY' || it.status === 'PROCESSED' ? `<span class="mono">${esc(it.destKey || '')}</span>${it.reason ? '<br><span class="muted">' + esc(it.reason) + '</span>' : ''}` : esc(it.reason || '')}</td>
+      <td class="small wrap">${why(it)}</td>
       <td>${it.status === 'AMBIGUOUS' && canResolve ? `<button class="btn sm" data-action="resolve" data-id="${it.id}">Resolve</button>` : ''}</td></tr>`).join('');
+  // Exceptions by reason: show one reason, or exclude (restore) a whole reason at once
+  const rel = showingExcluded ? reasons : reasons.filter(r => st.status === 'EXCEPTIONS' || r.status === st.status);
+  const reasonPanel = rel.length ? `<details class="reasons" ${S.reasonsOpen ? 'open' : ''}><summary data-action="toggle-reasons">${showingExcluded ? 'Excluded items by reason' : 'Exceptions by reason'} <span class="muted">(${rel.length})</span></summary>
+      <div class="tbl-wrap"><table><thead><tr><th>${showingExcluded ? 'Was' : 'Status'}</th><th>Reason</th><th style="text-align:right">Items</th><th></th></tr></thead><tbody>
+      ${rel.map(r => `<tr><td>${pill(r.status)}</td><td>${esc(r.group)}</td><td class="num" style="text-align:right">${fmt(r.count)}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-action="reason-show" data-group="${esc(r.group)}" data-status="${showingExcluded ? 'EXCLUDED' : esc(r.status)}">Show</button>
+        ${bulk ? `<button class="btn sm" data-action="${showingExcluded ? 'restore-reason' : 'exclude-reason'}" data-group="${esc(r.group)}" data-status="${esc(r.status)}" data-count="${r.count}">${showingExcluded ? 'Restore all' : 'Exclude all'}</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div></details>` : '';
+  const chip = st.group ? `<span class="chip">Reason: ${esc(st.group)} <button class="chip-x" data-action="clear-group" aria-label="Clear reason filter">×</button></span>` : '';
+  const verb = showingExcluded ? 'Restore' : 'Exclude';
+  const bulkBar = bulk && (data.total || S.sel.size) ? `<div class="bulkbar">
+      <span><b class="num" id="selcount">${fmt(S.sel.size)}</b> selected</span>
+      <button class="btn sm" id="selbtn" data-action="bulk-selected" ${S.sel.size ? '' : 'disabled'}>${verb} selected</button>
+      <button class="btn sm" id="selclear" data-action="clear-sel" style="${S.sel.size ? '' : 'display:none'}">Clear selection</button>
+      <span class="grow"></span>
+      ${data.total ? `<button class="btn sm ${showingExcluded ? '' : 'danger-soft'}" data-action="bulk-view" data-count="${data.total}">${verb} all ${fmt(data.total)} in this view</button>` : ''}</div>` : '';
+  const head = `<tr>${bulk ? `<th style="width:30px"><input type="checkbox" data-sel-page="1" ${allOnPage ? 'checked' : ''} ${pageIds.length ? '' : 'disabled'} aria-label="Select all on this page"></th>` : ''}<th>Record ID</th><th>Source file</th><th>Employee</th><th>Type</th><th>Year</th><th>Status</th><th>${showingExcluded ? 'Original reason / exclusion' : 'Destination / reason'}</th><th></th></tr>`;
+  S.pageIds = pageIds;
   return `<div class="panel"><div class="panel-h"><h2>${opts.title}</h2>
-      <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-action="items-tab" data-status="${k}">${l}${c[k] !== undefined ? ' ' + fmt(c[k]) : ''}</button>`).join('')}</div>
-      <input class="input" style="max-width:240px" id="itemq" placeholder="Search file, record, employee" value="${esc(st.q)}"></div>
-    ${data.items.length ? `<div class="tbl-wrap"><table><thead><tr><th>Record ID</th><th>Source file</th><th>Employee</th><th>Type</th><th>Year</th><th>Status</th><th>Destination / reason</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">Nothing to show for this filter.</div>'}
+      <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-action="items-tab" data-status="${k}">${l}${c[k] !== undefined ? ' ' + fmt(c[k]) : k === 'EXCEPTIONS' ? ' ' + fmt(EXCLUDABLE.reduce((a, s) => a + (c[s] || 0), 0)) : ''}</button>`).join('')}</div>
+      <input class="input" style="max-width:240px" id="itemq" placeholder="Search file, record, employee, reason" value="${esc(st.q)}"></div>
+    ${reasonPanel}${chip ? `<div class="panel-b" style="padding-bottom:0">${chip}</div>` : ''}${bulkBar}
+    ${data.items.length ? `<div class="tbl-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">Nothing to show for this filter.</div>'}
     <div class="pager"><span>${fmt(data.total)} items</span><button class="btn sm" data-action="page" data-page="${st.page - 1}" ${st.page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${st.page} of ${pages}</span><button class="btn sm" data-action="page" data-page="${st.page + 1}" ${st.page >= pages ? 'disabled' : ''}>Next</button></div></div>`;
+}
+
+/** Exclude (with a required note) or restore: ticked rows, everything in the view, or one reason. */
+function openBulk(kind, target) {
+  const restore = kind === 'restore';
+  S.bulk = { kind, target };
+  const what = target.ids ? `${fmt(target.ids.length)} selected item${target.ids.length === 1 ? '' : 's'}`
+    : `all ${fmt(target.count)} item${target.count === 1 ? '' : 's'} in ${target.group ? `reason “${esc(target.group)}”` : 'this view'}${target.status && target.status !== 'EXCEPTIONS' && target.status !== 'EXCLUDED' ? ` (${esc(LABEL[target.status])})` : ''}${target.q ? ` matching “${esc(target.q)}”` : ''}`;
+  $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="${restore ? 'Restore' : 'Exclude'} items">
+    <h2>${restore ? 'Restore' : 'Exclude'} ${what}?</h2>
+    <div class="small muted">${restore ? 'The items go back to the status they had before they were excluded. Recorded in the audit log.'
+      : 'Excluded items are not copied and no longer count as exceptions. They stay in both reports with status EXCLUDED, their original status and reason, your name, the time and this note. A new scan excludes the same items again while their status is the same. You can restore them at any time before the job is deleted.'}</div>
+    ${restore ? '' : '<div class="field"><label for="xnote">Why are these excluded? (required)</label><input class="input" id="xnote" maxlength="500" placeholder="e.g. Blank file names confirmed by client HR, not needed"></div>'}
+    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn ${restore ? 'primary' : 'danger'}" data-action="confirm-bulk">${restore ? 'Restore' : 'Exclude'}</button></div></div></div>`;
+  const n = $('#xnote'); if (n) n.focus();
 }
 
 async function jobReview(job) {
@@ -346,18 +401,18 @@ async function jobReview(job) {
   const tree = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/tree`);
   const treeText = buildTree(tree);
   const tiles = [['Files discovered', job.discovered, null], ['Ready', c.READY, 'READY'], ['Unmapped files', c.UNMAPPED, 'UNMAPPED'], ['Missing source files', c.MISSING, 'MISSING'],
-    ['Ambiguous matches', c.AMBIGUOUS, 'AMBIGUOUS'], ['Duplicates', c.DUPLICATE, 'DUPLICATE'], ['Validation errors', c.INVALID, 'INVALID'], ['Mapping records', job.mapping.rows, null]];
+    ['Ambiguous matches', c.AMBIGUOUS, 'AMBIGUOUS'], ['Duplicates', c.DUPLICATE, 'DUPLICATE'], ['Validation errors', c.INVALID, 'INVALID'], ...(c.EXCLUDED ? [['Excluded', c.EXCLUDED, 'EXCLUDED']] : []), ['Mapping records', job.mapping.rows, null]];
   const total = fileStatuses.reduce((a, s) => a + c[s], 0) || 1;
   return `<div class="kpis">${tiles.map(([l, v, s]) => `<div class="kpi ${s ? 'click' : ''}" ${s ? `data-action="items-tab" data-status="${s}"` : ''}><div class="k">${s ? `<i class="dot c-${s}"></i>` : ''}${l}</div><div class="v">${fmt(v)}</div></div>`).join('')}</div>
     <div class="panel" style="margin-top:16px"><div class="panel-b">
       <div class="bar">${fileStatuses.filter(s => c[s]).map(s => `<span class="c-${s}" style="width:${(100 * c[s] / total).toFixed(3)}%" title="${LABEL[s]}"></span>`).join('')}</div>
-      <div class="eq">Items: <b>${fmt(c.READY)}</b> ready + ${fmt(c.UNMAPPED)} unmapped + ${fmt(c.AMBIGUOUS)} ambiguous + ${fmt(c.DUPLICATE)} duplicate + ${fmt(c.INVALID)} validation errors + ${fmt(c.MISSING)} missing. Every source file and every mapping record has a status; nothing is skipped silently.</div>
+      <div class="eq">Items: <b>${fmt(c.READY)}</b> ready + ${fmt(c.UNMAPPED)} unmapped + ${fmt(c.AMBIGUOUS)} ambiguous + ${fmt(c.DUPLICATE)} duplicate + ${fmt(c.INVALID)} validation errors + ${fmt(c.MISSING)} missing${c.EXCLUDED ? ` + ${fmt(c.EXCLUDED)} excluded` : ''}. Every source file and every mapping record has a status; nothing is skipped silently.</div>
     </div></div>
     <div style="margin-top:16px">${await itemsPanel(job, { title: 'Exceptions and results', tabs: ['READY', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID'] })}</div>
     <div class="grid g2" style="margin-top:16px">
       <div class="panel"><div class="panel-h"><h2>Proposed output structure</h2><span class="small muted">sample</span></div><div class="panel-b"><pre class="tree">${esc(treeText)}</pre></div></div>
       <div class="panel" style="align-self:start"><div class="panel-h"><h2>Approval</h2><span class="small muted">required before any copy</span></div><div class="panel-b">
-        <div class="eq">Operation <b>COPY</b> · Duplicates <b>${esc(job.config.duplicateRule)}</b><br>Year <b>${esc(job.config.yearRule)}</b> · Integrity <b>${esc(job.config.integrity)}</b><br>Destination <b>${esc(job.destinationText)}</b></div>
+        <div class="eq">Operation <b>COPY</b> · Duplicates <b>${esc(job.config.duplicateRule)}</b>${job.config.ambiguousRule === 'KeepAll' ? ' · Several records <b>Keep all</b>' : ''}<br>Year <b>${esc(job.config.yearRule)}</b> · Integrity <b>${esc(job.config.integrity)}</b><br>Destination <b>${esc(job.destinationText)}</b></div>
         <div class="row-between"><a class="btn" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=xlsx">Download validation report</a><a class="btn sm" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=csv">CSV</a></div>
         ${canOperate() ? `<label class="check"><input type="checkbox" id="ack"><span>I have reviewed the preview and exceptions. Copy <b class="num">${fmt(c.READY)}</b> ready files. Exceptions stay in the report and are not copied.</span></label>
         <div><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button></div>` : '<div class="small muted">Viewers cannot approve processing.</div>'}
@@ -404,9 +459,9 @@ function jobProcess(job) {
 
 async function jobRecon(job) {
   const c = job.counts;
-  const tiles = [['Processed', 'PROCESSED'], ['Failed', 'FAILED'], ['Unmapped', 'UNMAPPED'], ['Missing', 'MISSING'], ['Ambiguous', 'AMBIGUOUS'], ['Duplicates', 'DUPLICATE'], ['Validation errors', 'INVALID']];
+  const tiles = [['Processed', 'PROCESSED'], ['Failed', 'FAILED'], ['Unmapped', 'UNMAPPED'], ['Missing', 'MISSING'], ['Ambiguous', 'AMBIGUOUS'], ['Duplicates', 'DUPLICATE'], ['Validation errors', 'INVALID'], ...(c.EXCLUDED ? [['Excluded', 'EXCLUDED']] : [])];
   const dur = job.startedAt && job.endedAt ? Math.round((new Date(job.endedAt) - new Date(job.startedAt)) / 60000) : null;
-  if (!['FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'PROCESSED', 'EXCEPTIONS', 'ALL'].includes(S.items.status)) S.items.status = 'EXCEPTIONS';
+  if (!['FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'PROCESSED', 'EXCLUDED', 'EXCEPTIONS', 'ALL'].includes(S.items.status)) S.items.status = 'EXCEPTIONS';
   const base = `/api/jobs/${encodeURIComponent(job.id)}/report?kind=reconciliation`;
   return `<div class="callout ${c.FAILED ? 'warn' : 'ok'}" style="margin-bottom:16px"><div><b>Reconciliation ${c.FAILED ? 'ready, with failed files to retry' : 'complete'}.</b> Every source file and mapping record has a final status. The source was not modified.</div></div>
     <div class="kpis">${tiles.map(([l, s]) => `<div class="kpi click" data-action="items-tab" data-status="${s}"><div class="k"><i class="dot c-${s}"></i>${l}</div><div class="v">${fmt(c[s])}</div></div>`).join('')}<div class="kpi"><div class="k">Duration</div><div class="v">${dur === null ? '—' : dur < 60 ? dur + ' min' : Math.floor(dur / 60) + 'h ' + (dur % 60) + 'm'}</div></div></div>
@@ -537,9 +592,15 @@ document.addEventListener('change', e => {
     else cfg.columns[t.dataset.col] = t.value || null;
     loadJob(true);
   }
-  if (t.name === 'yearRule' || t.name === 'duplicateRule') { currentCfg(S.job)[t.name] = t.value; loadJob(true); }
+  if (t.name === 'yearRule' || t.name === 'duplicateRule' || t.name === 'ambiguousRule') { currentCfg(S.job)[t.name] = t.value; loadJob(true); }
   if (t.dataset.bind && t.tagName === 'SELECT' && S.draft) { setPath(S.draft, t.dataset.bind, t.value); $('#main').innerHTML = vNew(); }
   if (t.name === 'cand' && S.resolve) { S.resolve.pick = t.value; renderResolve(); }
+  if (t.dataset.sel || t.dataset.selPage) {
+    if (t.dataset.sel) { const id = +t.dataset.sel; t.checked ? S.sel.add(id) : S.sel.delete(id); }
+    else { (S.pageIds || []).forEach(id => t.checked ? S.sel.add(id) : S.sel.delete(id)); document.querySelectorAll('[data-sel]').forEach(b => { b.checked = t.checked; }); }
+    const all = $('[data-sel-page]'); if (all) all.checked = (S.pageIds || []).length > 0 && S.pageIds.every(id => S.sel.has(id));
+    $('#selcount').textContent = fmt(S.sel.size); $('#selbtn').disabled = !S.sel.size; $('#selclear').style.display = S.sel.size ? '' : 'none';
+  }
   if (t.dataset.userRole) guard(async () => { await api('PUT', `/api/users/${encodeURIComponent(t.dataset.userRole)}`, { role: t.value }); toast('Role changed.'); });
 });
 
@@ -579,7 +640,7 @@ document.addEventListener('click', e => {
       const r = await api('POST', '/api/jobs', S.draft);
       toast(`Job ${r.id} created.`); S.draft = null; S.jobStep[r.id] = 2; location.hash = `#/job/${r.id}`;
     }, el),
-    'goto-step': () => { S.jobStep[S.job.id] = +el.dataset.step; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; loadJob(); window.scrollTo(0, 0); },
+    'goto-step': () => { S.jobStep[S.job.id] = +el.dataset.step; resetItems(); loadJob(); window.scrollTo(0, 0); },
     'upload-map': () => guard(async () => {
       const fs = [...$('#mapfile').files]; if (!fs.length) throw new Error('Choose a file first.');
       const fd = new FormData(); fs.forEach(f => fd.append('files', f));
@@ -601,9 +662,25 @@ document.addEventListener('click', e => {
     'save-scan': () => guard(async () => {
       await api('PUT', `/api/jobs/${encodeURIComponent(S.job.id)}/config`, currentCfg(S.job));
       await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/scan`);
-      S.cfgEdit = null; S.jobStep[S.job.id] = null; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; await loadJob();
+      S.cfgEdit = null; S.jobStep[S.job.id] = null; resetItems(); await loadJob();
     }, el),
-    'items-tab': () => { S.items.status = el.dataset.status; S.items.page = 1; loadJob(true); },
+    'items-tab': () => { resetItems(el.dataset.status); S.items.q = ($('#itemq') || {}).value || ''; loadJob(true); },
+    'reason-show': () => { resetItems(el.dataset.status); S.items.group = el.dataset.group; loadJob(true); },
+    'clear-group': () => { S.items.group = ''; S.items.page = 1; S.sel = new Set(); loadJob(true); },
+    'toggle-reasons': () => { S.reasonsOpen = !el.parentElement.open; },
+    'clear-sel': () => { S.sel = new Set(); loadJob(true); },
+    'bulk-selected': () => openBulk(S.items.status === 'EXCLUDED' ? 'restore' : 'exclude', { ids: [...S.sel] }),
+    'bulk-view': () => openBulk(S.items.status === 'EXCLUDED' ? 'restore' : 'exclude', { status: S.items.status, q: S.items.q, group: S.items.group, count: +el.dataset.count }),
+    'exclude-reason': () => openBulk('exclude', { status: el.dataset.status, group: el.dataset.group, count: +el.dataset.count }),
+    'restore-reason': () => openBulk('restore', { status: 'EXCLUDED', group: el.dataset.group, count: +el.dataset.count }),
+    'confirm-bulk': () => guard(async () => {
+      const { kind, target } = S.bulk, note = ($('#xnote') || {}).value || '';
+      const body = target.ids ? { ids: target.ids, note } : { allInView: true, status: target.status, q: target.q || '', group: target.group || '', note };
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${kind}`, body);
+      $('#layer').innerHTML = ''; S.bulk = null; S.sel = new Set(); S.items.page = 1;
+      if (kind === 'exclude' && target.group && !target.ids) S.items.group = '';
+      toast(r.message); await loadJob(true);
+    }, el),
     'page': () => { S.items.page = +el.dataset.page; loadJob(true); },
     'resolve': () => guard(() => openResolve(+el.dataset.id), el),
     'do-resolve': () => guard(async () => {
@@ -613,7 +690,7 @@ document.addEventListener('click', e => {
     'approve': () => { if (!$('#ack').checked) return toast('Tick the confirmation box first.', true); openApprove(); },
     'confirm-approve': () => guard(async () => {
       await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true });
-      $('#layer').innerHTML = ''; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; await loadJob(); window.scrollTo(0, 0);
+      $('#layer').innerHTML = ''; resetItems(); await loadJob(); window.scrollTo(0, 0);
     }, el),
     'pause': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/pause`); toast(r.message); }, el),
     'resume': () => guard(async () => { await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/resume`); await loadJob(); }, el),

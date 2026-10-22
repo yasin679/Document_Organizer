@@ -85,7 +85,7 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                     return;
                 }
                 var c = app.CountByStatus(jobId);
-                bool exceptions = c.Where(kv => kv.Key != ItemStatus.Processed).Any(kv => kv.Value > 0);
+                bool exceptions = Exclusions.HasExceptions(c);
                 app.UpdateJob(jobId, ("status", exceptions ? JobStatus.CompletedWithExceptions : JobStatus.Completed), ("ended_at", DateTime.UtcNow.ToString("o")));
                 app.Audit("System", null, "Processing completed", jobId,
                     $"{c[ItemStatus.Processed]:N0} processed · {c[ItemStatus.Failed]:N0} failed · {c[ItemStatus.Duplicate]:N0} duplicate");

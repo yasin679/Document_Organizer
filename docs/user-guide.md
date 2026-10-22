@@ -277,7 +277,7 @@ Step 3 links each column in the mapping file to the field the application needs.
 
 ## 8 Setting the rules
 
-Step 4 decides how the year is worked out, how folders are named, how files are matched, what happens when a file already exists at the destination, and how copies are verified.
+Step 4 decides how the year is worked out, how folders are named, how files are matched, what happens when a file matches several records or already exists at the destination, and how copies are verified.
 
 ![Figure 11: Step 4, rules](images/11-rules.jpg)
 
@@ -288,10 +288,11 @@ Step 4 decides how the year is worked out, how folders are named, how files are 
 | 3 | Example | The destination path the template gives for the first mapping record. It updates as you type. |
 | 4 | Matching options | Exact file name and path matching always apply. **Case-insensitive file name** and **Normalized file name** (spaces, dashes and underscores treated alike) are on by default. |
 | 5 | Several file names in one cell | On by default. A File name cell listing several files, separated by commas or semicolons, becomes one entry per file (section 6). |
-| 6 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
-| 7 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
-| 8 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
-| 9 | **Save and start scan** | Saves the rules and starts step 5. |
+| 6 | When a file matches several mapping records | **Flag as ambiguous** (default): the file is AMBIGUOUS until a person picks the record in step 6. **Keep all**: the file is copied once for every record that names it, each to its own destination (for example `E1/Offer/2024/x.pdf` and `E2/PAN/2023/x.pdf`), and each copy is its own row in both reports. If two of those records would give the same destination path, one copy is kept and the other is DUPLICATE. |
+| 7 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
+| 8 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
+| 9 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
+| 10 | **Save and start scan** | Saves the rules and starts step 5. |
 
 For cloud destinations an extra switch, **Keep object metadata**, keeps the source object's metadata and adds the job ID, record ID and employee code to each copied file.
 
@@ -336,14 +337,64 @@ When the scan finishes the job shows **Awaiting approval** and step 6 opens. Not
 
 | # | Item | Description |
 |---|---|---|
-| 3 | Filters | **All exceptions** (default), one tab per status with its count, or **Everything**. |
-| 4 | Search | Finds items by file name, record ID, employee code or destination path. |
-| 5 | **Resolve** | Shown on AMBIGUOUS items. Opens the resolve panel (section 10.3). |
+| 3 | Filters | **All exceptions** (default), one tab per status with its count, **Excluded**, or **Everything**. Tick boxes and bulk buttons for excluding are described in section 10.3. |
+| 4 | Search | Finds items by file name, record ID, employee code, destination path or reason. |
+| 5 | **Resolve** | Shown on AMBIGUOUS items. Opens the resolve panel (section 10.4). |
 | 6 | Pages | 50 items per page; use **Previous** and **Next**. |
 
 The **Destination / reason** column shows the proposed destination path for READY items, and the reason for every exception in plain words.
 
-### 10.3 Resolving an ambiguous file
+### 10.3 Excluding exceptions in bulk
+
+Some exceptions need no follow-up: blank file names the client has confirmed, scanner test pages, files that belong to another module. **Exclude** them to take them out of the exception lists, with a note saying why. Excluded items:
+
+- are never copied and no longer count as exceptions (a finished job with only processed and excluded items is **Completed**);
+- keep their original status and reason, and stay in both reports with status **EXCLUDED**, who excluded them, when and the note;
+- are excluded again automatically after a new scan, as long as the same file or record still has the same status;
+- can be restored at any time from the **Excluded** tab.
+
+![Figure 14a: Step 6, choosing exceptions to exclude](images/14a-bulk-exclude.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | **Exceptions by reason** | Click to open the list of reasons with their status and number of items. |
+| 2 | **Exclude all** (per reason) | Excludes every item with that reason. **Show** next to it filters the table to that reason. |
+| 3 | Select page | Ticks every exception on this page. Each row also has its own tick box. |
+| 4 | **Exclude selected** | Excludes the ticked rows. The count on the left shows how many are ticked. |
+| 5 | **Exclude all N in this view** | Excludes everything the current tab and search show, on every page. |
+| 6 | **Excluded** tab | Lists excluded items and lets you restore them. |
+
+There are three ways to choose what to exclude. All of them work on every exception type (unmapped, missing, ambiguous, duplicate, validation errors and, after copying, failed):
+
+| Way | How |
+|---|---|
+| Ticked rows | Tick the box on each row (the box in the header ticks the whole page; ticks are kept when you change page), then **Exclude selected**. |
+| Everything in the view | Choose a tab and, if you like, search; then **Exclude all N in this view**. |
+| A whole reason | Open **Exceptions by reason** above the table. Each reason (for example *Blank file name*, *No mapping record*, *Year not found*) is listed with its status and count. **Show** filters the table to that reason; **Exclude all** excludes it at once. |
+
+![Figure 14b: The note is required](images/14b-exclude-note.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Title | Says exactly what will be excluded: the number of ticked items, or all items of a view or reason. |
+| 2 | Note | Why these items need no follow-up. Kept on each item, in both reports and in the audit log. |
+| 3 | **Exclude** | Confirms. **Cancel** changes nothing. |
+
+![Figure 14c: The Excluded tab](images/14c-excluded-tab.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | **Excluded** tab | Every excluded item, with the count. |
+| 2 | Original reason and exclusion | The status and reason the item had, then who excluded it, when, and the note. |
+| 3 | **Restore all** (per reason) | Puts every item of that reason back to its original status. |
+| 4 | **Restore all N in this view** | Restores everything shown. Tick rows and use **Restore selected** for single items. |
+
+A note is required each time and is recorded in the audit log. On the **Excluded** tab the same three ways restore items (**Restore selected**, **Restore all N in this view**, or **Restore all** for a reason); restoring needs no note. Operators and administrators can exclude and restore while the job is awaiting approval, paused or completed; viewers can see excluded items.
+
+> [!NOTE]
+> Excluding is not a fix. If an exception means the mapping file is wrong, correct the mapping file and scan again instead.
+
+### 10.4 Resolving an ambiguous file
 
 A file is AMBIGUOUS when more than one mapping record names it, for example `id_proof.pdf` for two different employees. The application will not choose; a person must.
 
@@ -357,7 +408,7 @@ A file is AMBIGUOUS when more than one mapping record names it, for example `id_
 | 4 | **Leave flagged** | Closes the panel without a decision. The file stays AMBIGUOUS and is not copied. |
 | 5 | **Assign to record …** | Assigns the file. It becomes READY, or DUPLICATE if that record or destination is already taken. |
 
-### 10.4 Checking the output and approving
+### 10.5 Checking the output and approving
 
 ![Figure 16: Step 6, proposed structure and approval](images/16-approval.jpg)
 
@@ -410,11 +461,13 @@ When copying finishes the job moves to step 8.
 | # | Item | Description |
 |---|---|---|
 | 1 | Result | Green when every item has a final status; amber when some files failed and can be retried. |
-| 2 | Final counts | Processed, Failed, Unmapped, Missing, Ambiguous, Duplicates, Validation errors and Duration. Click a tile to filter the results. |
+| 2 | Final counts | Processed, Failed, Unmapped, Missing, Ambiguous, Duplicates, Validation errors, Excluded (when any) and Duration. Click a tile to filter the results. |
 | 3 | **Reconciliation Excel** | Downloads the full report with a Summary sheet. |
 | 4 | **Reconciliation CSV** | The same data as CSV. |
 | 5 | Filters | Show exceptions, one status, or everything. |
 | 6 | Results table | Every item with its destination (processed) or reason (exceptions). |
+
+Exceptions can still be excluded or restored here, as in section 10.3; when no exception is left the job becomes **Completed**.
 
 When files failed, a **Retry N failed** button appears. Retrying copies only the failed files, using the current version of each file in the source. Files already processed are left alone.
 
@@ -422,8 +475,8 @@ When files failed, a **Retry N failed** button appears. Retrying copies only the
 
 | Report | Contents |
 |---|---|
-| Validation report (before approval) | Summary sheet (job, source, destination, every mapping file with its row count and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, mapping file, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier. |
-| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, mapping file, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by. |
+| Validation report (before approval) | Summary sheet (job, source, destination, every mapping file with its row count and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, mapping file, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier, and for excluded items the original status, who excluded them, when and the note. |
+| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, mapping file, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by, then the same four exclusion columns. |
 
 ## 13 Audit log
 
@@ -478,10 +531,11 @@ Every source file and every mapping record ends with exactly one status. Only RE
 | PROCESSED | Copied and verified. | Nothing. |
 | UNMAPPED | A file in the source has no matching mapping record. | Check with the client or the data team whether the record is missing from the mapping file. |
 | MISSING | A mapping record has no matching file in the source. A record that repeats another missing record is also MISSING, and its reason names the first record. | Check whether the file is in another container, bucket, prefix or folder. |
-| AMBIGUOUS | More than one mapping record names the same file. | Resolve it (section 10.3) or leave it flagged. |
+| AMBIGUOUS | More than one mapping record names the same file (with the default rule **Flag as ambiguous**). | Resolve it (section 10.4), leave it flagged, or scan with the rule **Keep all** to copy it for every record. |
 | DUPLICATE | A repeated mapping record whose file was found (the first record is copied), a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
 | INVALID | A validation error: blank employee code, type or file name (including `NULL`); no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
 | FAILED | The copy did not succeed, for example storage was busy or the file changed after the scan. | Click **Retry failed**. |
+| EXCLUDED | An exception that a person set aside with a note (section 10.3). Not copied; not counted as an exception. The original status and reason are kept. | Nothing, or **Restore** it from the Excluded tab. |
 
 ## 16 Glossary
 

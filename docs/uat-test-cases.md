@@ -111,6 +111,8 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 | UAT-30b | M | Placeholder file name | Put `NULL` in a File name cell; scan | That record is INVALID "Blank FileName", not MISSING | |
 | UAT-30c | M | Repeat of a missing record | Two identical rows (same file, employee, type) naming a file that is not in the source; scan | Both MISSING; the second names the first; neither is DUPLICATE | |
 | UAT-30d | H | `{MappingFile}` token | With two mapping files, template `{MappingFile}/{EmployeeCode}/{FileName}` | Example path and destinations start with the mapping file name | |
+| UAT-30e | H | Keep all | Use a mapping file where two records (different employees) name the same file; in step 4 choose **Keep all**; scan, approve | No AMBIGUOUS; one READY item per record with its own destination; after copying the file is at both destinations; the reconciliation report has a row for each | |
+| UAT-30f | H | Keep all, same path | As UAT-30e with template `{FileName}` | One copy READY, the other DUPLICATE "Destination path collision" | |
 | UAT-31 | M | Overwrite needs admin | As operator, open duplicate rule options | Overwrite is greyed out with "Not permitted by the administrator" unless an admin enabled it | |
 
 ## 7 Review, resolve and approve
@@ -121,6 +123,13 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 | UAT-33 | M | Validation report | Download validation report (Excel and CSV) | Files open; one row per item; summary sheet present | |
 | UAT-34 | M | Resolve ambiguous | Ambiguous tab > **Resolve** on one file, choose a record, add a note, **Assign** | Item becomes READY (459 ready); audit shows the resolution with the note | |
 | UAT-35 | H | Leave flagged | Resolve the other ambiguous file, click **Leave flagged** | Item stays AMBIGUOUS | |
+| UAT-35a | M | Exclude ticked rows | All exceptions tab: tick two rows, **Exclude selected**, enter a note | Both EXCLUDED; counts update; Excluded tab shows original status, user, time and note | |
+| UAT-35b | M | Exclude a whole reason | Open **Exceptions by reason**, **Exclude all** on one reason, enter a note | Every item of that reason EXCLUDED; the reason disappears from the list | |
+| UAT-35c | H | Exclude everything in a view | Unmapped tab, search for part of a name, **Exclude all N in this view** | Only the items shown are excluded | |
+| UAT-35d | H | Note required | Try to exclude without a note | Refused with a message; nothing changes | |
+| UAT-35e | H | Kept after a new scan | Go back to step 4 and scan again | The same items are EXCLUDED again | |
+| UAT-35f | M | Restore | Excluded tab: **Restore all N in this view** | Items return to their original status | |
+| UAT-35g | H | Viewer | Sign in as a viewer | Excluded tab visible; no tick boxes or exclude buttons | |
 | UAT-36 | M | Approval needs confirmation | Click **Approve and start copy** without ticking the checkbox | Message "Tick the confirmation box first"; nothing starts | |
 | UAT-37 | M | Approve | Tick, approve, confirm | Status Processing; audit shows Processing approved with user and time | |
 
@@ -142,6 +151,8 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 |---|---|---|---|---|---|
 | UAT-45 | M | Reconciliation report | Step 8 > **Reconciliation Excel** | Summary lists every mapping file; item sheet has status, reason, mapping file, paths, hashes, times | |
 | UAT-46 | M | Integrity evidence | In the report, check the hash columns for processed items | Source and destination hashes equal | |
+| UAT-46a | M | Exclusions in the report | Exclude one exception, download the reconciliation report | Row has status EXCLUDED and the last four columns filled (original status, by, at, note) | |
+| UAT-46b | H | Close a completed job | On a job Completed with exceptions, exclude all remaining exceptions | Job becomes Completed | |
 | UAT-47 | M | Audit trail | Audit log, search by Job ID | Creation, mapping upload, rules, scan, resolution, approval, processing and export all listed | |
 
 ## 10 Cloud storage

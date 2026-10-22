@@ -136,6 +136,7 @@ One row per source file and per unmatched mapping record.
 | `source_hash`, `dest_hash`, `integrity_method` | Integrity evidence after copy |
 | `processed_at`, `processed_by`, `attempts`, `started_at` | Copy tracking used for resume and retry |
 | `resolved_by`, `resolution_note` | Manual resolution of AMBIGUOUS items |
+| `excluded_from`, `excluded_by`, `excluded_at`, `exclusion_note` | For EXCLUDED items: the status before exclusion, who, when (UTC) and why |
 
 Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 
@@ -146,6 +147,7 @@ Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 | `users` | `user_name` (PK, case-insensitive), `display_name`, `role`, `password_hash`, `active`, `created_at`, `last_login` |
 | `settings` | `key`, `value` (in-app settings: storage types enabled, overwrite, parallel copies, retention) |
 | `audit` | `id`, `ts`, `user_name`, `role`, `event`, `job_id`, `details`, `ip` (index on `ts`) |
+| `exclusions` | `job_id`, `item_key` (PK together), `from_status`, `note`, `by_user`, `at`. One row per excluded item; `item_key` is `f:<source key>\|<mapping file>\|<record ID>` for a file (one file can have an item per record under the keep-all rule) or `r:<mapping file>\|<record ID>` for a record without a file. |
 
 ## 4 Processing logic
 
@@ -201,11 +203,14 @@ Repeated records (same normalized file name, employee code and document type as 
 | READY | One record; employee code, type and file name present; valid year; file size above 0; not in an archive tier; planned path unique |
 | UNMAPPED | No record matches the file |
 | MISSING | Record with no matching file, or a repeat of such a record |
-| AMBIGUOUS | More than one record matches |
+| AMBIGUOUS | More than one record matches (rule `AmbiguousRule` = `Flag`, the default). With `KeepAll`, the file instead gets one item per matching record, each evaluated as if it were the only match: READY with its own destination, DUPLICATE if the record is already matched or the path is taken, or INVALID. Files are still counted once (`discovered` counts distinct source keys). |
 | DUPLICATE | Same file, employee and type repeated in the mapping files when the first record found its file, the same record matched twice, or two items would write the same destination path |
 | INVALID | Blank required value (including placeholders such as `NULL`), no year, 0-byte file, or object in an archive tier (Azure `Archive`; S3 `GLACIER` or `DEEP_ARCHIVE`) |
 | PROCESSED | Copied and verified |
 | FAILED | Copy failed or source changed since scan |
+| EXCLUDED | An exception set aside by an operator with a note; never copied; not an exception |
+
+**Exclusion.** UNMAPPED, MISSING, AMBIGUOUS, DUPLICATE, INVALID and FAILED items can be excluded while the job is awaiting approval, paused or completed (not while a scan or copy runs). The item keeps its data and reason; `excluded_from` keeps its status. Each exclusion is also stored in `exclusions`, and after every scan an item with the same key and the same status is excluded again before the items are saved. Restoring sets the status back and deletes the stored exclusion. A completed job is *Completed with exceptions* while any item other than PROCESSED or EXCLUDED is left; excluding or restoring recalculates it. Reasons are grouped for display and bulk actions by an SQL `CASE` over the reason text (for example `Blank FileName%` → *Blank file name*).
 
 ### 4.6 Destination path
 
@@ -322,8 +327,11 @@ All endpoints are under `/api` except `/healthz`. Roles: V = Viewer, O = Operato
 | `POST /jobs/{id}/mapping/demo` | O | Use the demo mapping file |
 | `PUT /jobs/{id}/config` | O | Save rules |
 | `POST /jobs/{id}/scan` | O | Start scan |
-| `GET /jobs/{id}/items`, `/jobs/{id}/tree` | V | Results and proposed structure |
+| `GET /jobs/{id}/items?status=&q=&group=&page=`, `/jobs/{id}/tree` | V | Results (filter by status, search, reason group) and proposed structure |
 | `POST /jobs/{id}/items/{itemId}/resolve` | O | Resolve ambiguous file |
+| `GET /jobs/{id}/reasons[?excluded=true]` | V | Exceptions (or excluded items) counted by status and reason group |
+| `POST /jobs/{id}/items/exclude` | O | Exclude: `{ "ids": [..], "note": "..." }` or `{ "allInView": true, "status", "q", "group", "note" }`; note required |
+| `POST /jobs/{id}/items/restore` | O | Restore: `{ "ids": [..] }` or `{ "allInView": true, "q", "group" }` |
 | `POST /jobs/{id}/approve`, `/pause`, `/resume`, `/retry-failed` | O | Processing control |
 | `GET /jobs/{id}/report?kind=&format=` | V | Validation or reconciliation report |
 | `GET /audit` | V | Audit log |

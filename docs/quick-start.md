@@ -34,7 +34,7 @@ This card takes you from a document mapping file to an organized, reconciled cop
 | 3 | Column mapping | Columns are matched automatically, per file. Fix any shown as **Missing**. | 1 min |
 | 4 | Rules | Keep the defaults unless the client asked for something else. Click **Save and start scan**. | 1 min |
 | 5 | Scan | Wait. 60,000 files scan in seconds from a folder; cloud listings take longer. | 1 min+ |
-| 6 | Review | Read the counts. Open each exception tab. Resolve ambiguous files. Download the validation report. Tick the confirmation and click **Approve and start copy**. | 10 min+ |
+| 6 | Review | Read the counts. Open each exception tab. Resolve ambiguous files. Exclude exceptions that need no follow-up, in bulk, with a note. Download the validation report. Tick the confirmation and click **Approve and start copy**. | 10 min+ |
 | 7 | Processing | Watch progress. You can **Pause** and **Resume** at any time. | varies |
 | 8 | Reconciliation | Download the reconciliation report (Excel) and attach it to the client's ticket. Retry failed files if any. | 2 min |
 
@@ -47,6 +47,7 @@ This card takes you from a document mapping file to an organized, reconciled cop
 | Year source | UploadedOn year | The client wants the year from a Year column or the file name |
 | Folder template | `{EmployeeCode}/{DocumentType}/{Year}/{FileName}` | The client asked for a different structure |
 | Matching | Exact, case-insensitive and normalized file names | Rarely |
+| File matching several records | Flag as ambiguous | The same document belongs to several records and each needs its own copy: **Keep all** |
 | Several file names in one cell | Split into one entry per file | The file names really contain commas or semicolons |
 | File already at destination | Skip and report | A re-run after a partial copy: use Compare hash |
 | Integrity check | SHA-256 | Very large cloud jobs: Content-MD5 is faster |
@@ -61,10 +62,11 @@ This card takes you from a document mapping file to an organized, reconciled cop
 | PROCESSED | Copied and verified | None |
 | UNMAPPED | File with no mapping record | Ask the client or data team |
 | MISSING | Mapping record with no file (including repeats of a missing record) | Check the source prefix, bucket or folder |
-| AMBIGUOUS | File matches more than one record | Resolve it in step 6 |
+| AMBIGUOUS | File matches more than one record | Resolve it in step 6, or use the rule **Keep all** |
 | DUPLICATE | Repeated record, or file already at destination | Read the reason |
 | INVALID | Blank employee code, type or file name (including `NULL`); no year; empty file; file in an archive tier | Fix the mapping file and scan again |
 | FAILED | Copy did not succeed | Click **Retry failed** |
+| EXCLUDED | Exception set aside by a person, with a note | None; restore it from the Excluded tab if needed |
 
 ### 1.5 Try it safely first
 

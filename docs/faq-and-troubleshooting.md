@@ -35,6 +35,14 @@ One row per document with at least an employee code, a document type and a file 
 
 Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder. Files can also differ in column order, extra columns, title rows, CSV delimiter, file type (`.xlsx` and `.csv` together) and date column (a file with only a Year column is fine).
 
+### One file is named by several records. Can it go to each of them?
+
+Yes. In step 4, under **When a file matches several mapping records**, choose **Keep all** and scan. The file is copied once per record, each to its own destination, and each copy is its own row in the reconciliation report. With the default **Flag as ambiguous**, the file waits for a person to choose one record.
+
+### Can I get rid of thousands of exceptions at once?
+
+Yes, by excluding them (User Guide section 10.3). Tick rows, use **Exclude all N in this view** on any tab or search, or exclude a whole reason from **Exceptions by reason** (for example all *Blank file name* errors). A note is required. Excluded items are not copied, stay in the reports with status EXCLUDED and the note, are excluded again after a new scan, and can be restored. Nothing is deleted.
+
 **A File name cell lists several files separated by commas. Is that supported?**
 
 Yes. Each name becomes its own entry: record `ROW-68` with `a.pdf,b.pdf` becomes `ROW-68/1` (`a.pdf`) and `ROW-68/2` (`b.pdf`), each with its own status. Semicolons work the same way. A cell that is exactly the name of a source file (a real file name containing a comma) is never split. The option is under step 4 and is on by default.
@@ -165,6 +173,9 @@ No. There is no screen or API to change the audit log.
 | Many MISSING whose file name contains commas | Version 2.0 or earlier, or **Several file names in one cell** turned off | Use version 2.1 with the option on (step 4), then scan again |
 | Accented file names (`é`, `ü`) MISSING although the files exist | Version 2.0 or earlier read every CSV as UTF-8, so a CSV saved by Excel on Windows lost accented characters | Use version 2.1 and scan again |
 | "… has the same content as …, which is already added" | The same mapping file was uploaded twice | Nothing to do; the first copy is kept |
+| "Enter a note saying why these items are excluded" | Exclude was clicked without a note | Type the reason; it goes into the reports and the audit log |
+| "Exceptions can be excluded after a scan…" | The job is a draft, scanning or copying | Wait for the scan to finish, or pause the copy |
+| Excluded items came back after a scan | Their status changed (for example a missing file arrived, so the record is READY) | Nothing; exclusions only re-apply when the status is the same |
 | Scan refused: "Column … is required" naming one of several files | That file's columns were not recognised | Step 3, click the file's name, map its columns |
 | Almost everything MISSING | Source prefix, bucket or folder is wrong | Check the source location in step 1 |
 | Almost everything DUPLICATE | Destination already holds an earlier copy | Use a new destination prefix, or the Compare hash rule |

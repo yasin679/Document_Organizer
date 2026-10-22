@@ -176,6 +176,7 @@ public static class Endpoints
                 throw new ApiError("Only administrators can delete jobs that have been scanned. Operators can delete their own draft jobs.", 403);
             db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id));
             db.Db.Execute("DELETE FROM jobs WHERE id=@j", ("j", id));
+            db.Db.Execute("DELETE FROM exclusions WHERE job_id=@j", ("j", id));
             try { Directory.Delete(Path.Combine(opt.DataPath, "jobs", id), true); } catch { }
             db.Audit(u, r, "Job deleted", id, null, Ip(ctx));
             return Results.Ok();
@@ -255,13 +256,15 @@ public static class Endpoints
             if (cfg.DuplicateRule == "Overwrite" && !db.LoadSettings().AllowOverwrite) errors.Add("Overwrite is not permitted by the administrator.");
             if (!new[] { "UploadedOn", "YearColumn", "FileNamePattern", "PathPattern" }.Contains(cfg.YearRule)) errors.Add("Unknown year rule.");
             if (!new[] { "Skip", "Rename", "CompareHash", "Overwrite" }.Contains(cfg.DuplicateRule)) errors.Add("Unknown duplicate rule.");
+            if (string.IsNullOrEmpty(cfg.AmbiguousRule)) cfg.AmbiguousRule = "Flag";
+            if (!new[] { "Flag", "KeepAll" }.Contains(cfg.AmbiguousRule)) errors.Add("Unknown rule for files matching several records.");
             if (!new[] { "None", "Sha256", "Md5" }.Contains(cfg.Integrity)) errors.Add("Unknown integrity option.");
             if (errors.Count > 0) return Results.Json(new { error = string.Join(" ", errors), errors }, statusCode: 400);
             bool wasScanned = j.Str("status") != JobStatus.Draft;
             db.UpdateJob(id, ("config_json", AppDb.ToJson(cfg)), ("status", JobStatus.Draft), ("message", wasScanned ? "Configuration changed. Run the scan again." : null));
             if (wasScanned) { db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id)); db.UpdateJob(id, ("counts_json", null), ("discovered", 0)); }
             db.Audit(u, r, "Configuration saved", id,
-                $"Year rule: {cfg.YearRule}{(cfg.YearRule is "FileNamePattern" or "PathPattern" ? " " + cfg.YearPattern : "")} · Year mandatory: {cfg.YearMandatory} · Template: {cfg.Template} · Duplicates: {cfg.DuplicateRule} · Integrity: {cfg.Integrity} · Batch: {cfg.BatchSize}", Ip(ctx));
+                $"Year rule: {cfg.YearRule}{(cfg.YearRule is "FileNamePattern" or "PathPattern" ? " " + cfg.YearPattern : "")} · Year mandatory: {cfg.YearMandatory} · Template: {cfg.Template} · Several records: {(cfg.AmbiguousRule == "KeepAll" ? "keep all" : "flag as ambiguous")} · Duplicates: {cfg.DuplicateRule} · Integrity: {cfg.Integrity} · Batch: {cfg.BatchSize}", Ip(ctx));
             return Results.Ok(new { ok = true });
         }).RequireAuthorization("Operate");
 
@@ -278,25 +281,14 @@ public static class Endpoints
             return Results.Ok(new { started = true });
         }).RequireAuthorization("Operate");
 
-        api.MapGet("/jobs/{id}/items", (string id, AppDb db, string? status, string? q, int? page, int? pageSize) =>
+        api.MapGet("/jobs/{id}/items", (string id, AppDb db, string? status, string? q, string? group, int? page, int? pageSize) =>
         {
             Need(db, id);
             int ps = Math.Clamp(pageSize ?? 50, 10, 500), pg = Math.Max(1, page ?? 1);
-            var where = "job_id=@j";
-            var args = new List<(string, object?)> { ("j", id) };
-            if (!string.IsNullOrEmpty(status) && status != "ALL")
-            {
-                if (status == "EXCEPTIONS") where += " AND status NOT IN ('READY','PROCESSED')";
-                else { where += " AND status=@s"; args.Add(("s", status)); }
-            }
-            if (!string.IsNullOrWhiteSpace(q))
-            {
-                where += " AND (source_key LIKE @q OR file_name LIKE @q OR record_id LIKE @q OR employee_code LIKE @q OR dest_key LIKE @q)";
-                args.Add(("q", "%" + q.Trim() + "%"));
-            }
+            var (where, args) = Exclusions.Where(id, status, q, group);
             var total = Convert.ToInt64(db.Db.Scalar($"SELECT COUNT(*) FROM items WHERE {where}", args.ToArray()) ?? 0L);
             args.Add(("lim", ps)); args.Add(("off", (pg - 1) * ps));
-            var rows = db.Db.Query($"SELECT * FROM items WHERE {where} ORDER BY CASE status WHEN 'AMBIGUOUS' THEN 0 WHEN 'FAILED' THEN 1 ELSE 2 END, id LIMIT @lim OFFSET @off", args.ToArray());
+            var rows = db.Db.Query($"SELECT *, {Exclusions.GroupSql} reason_group FROM items WHERE {where} ORDER BY CASE status WHEN 'AMBIGUOUS' THEN 0 WHEN 'FAILED' THEN 1 ELSE 2 END, id LIMIT @lim OFFSET @off", args.ToArray());
             return Results.Ok(new
             {
                 total, page = pg, pageSize = ps,
@@ -307,10 +299,47 @@ public static class Endpoints
                     documentType = r.Str("doc_type"), documentName = r.Str("doc_name"), uploadedOn = r.Str("uploaded_on"), year = r.Str("year"),
                     mappingFile = r.Str("mapping_file"), destKey = r.Str("dest_key"), sourceHash = r.Str("source_hash"), destHash = r.Str("dest_hash"), integrityMethod = r.Str("integrity_method"),
                     processedAt = r.Str("processed_at"), processedBy = r.Str("processed_by"), resolvedBy = r.Str("resolved_by"), attempts = r.Long("attempts"),
+                    reasonGroup = r.Str("reason_group"), excludedFrom = r.Str("excluded_from"), excludedBy = r.Str("excluded_by"),
+                    excludedAt = r.Str("excluded_at"), exclusionNote = r.Str("exclusion_note"),
                     candidates = r.Str("candidates_json") is string cj ? JsonSerializer.Deserialize<List<Candidate>>(cj, AppDb.Json) : null
                 })
             });
         }).RequireAuthorization("View");
+
+        // Exceptions grouped by status and reason, for excluding a whole reason at once (excluded=true: what was excluded)
+        api.MapGet("/jobs/{id}/reasons", (string id, bool? excluded, AppDb db, Exclusions ex) =>
+        {
+            Need(db, id);
+            return Results.Ok(ex.Reasons(id, excluded == true).Select(x => new { status = x.Status, group = x.Group, count = x.Count }));
+        }).RequireAuthorization("View");
+
+        // Bulk exclude / restore: either item IDs (ticked rows) or a filter (everything in the current view: status, search, reason)
+        api.MapPost("/jobs/{id}/items/exclude", (HttpContext ctx, string id, BulkBody body, AppDb db, JobService js, Exclusions ex) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            if (Exclusions.CannotChange(j, js.IsRunning(id)) is string why) throw new ApiError(why);
+            var note = (body.Note ?? "").Trim();
+            if (note.Length < 3) throw new ApiError("Enter a note saying why these items are excluded (it is kept in the reports and audit log).");
+            if (note.Length > 500) note = note[..500];
+            var (ids, filter) = BulkTarget(body);
+            var (n, by) = ex.Exclude(id, ids, filter, note, u);
+            if (n == 0) throw new ApiError("None of the chosen items can be excluded (only exceptions can).");
+            db.Audit(u, r, "Exceptions excluded", id, $"{n:N0} items ({Describe(by)}){DescribeFilter(filter)} · Note: {note}", Ip(ctx));
+            return Results.Ok(new { count = n, byStatus = by, message = $"{n:N0} item{(n == 1 ? "" : "s")} excluded." });
+        }).RequireAuthorization("Operate");
+
+        api.MapPost("/jobs/{id}/items/restore", (HttpContext ctx, string id, BulkBody body, AppDb db, JobService js, Exclusions ex) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            if (Exclusions.CannotChange(j, js.IsRunning(id)) is string why) throw new ApiError(why);
+            var (ids, filter) = BulkTarget(body, restore: true);
+            var (n, by) = ex.Restore(id, ids, filter);
+            if (n == 0) throw new ApiError("None of the chosen items are excluded.");
+            db.Audit(u, r, "Exclusions restored", id, $"{n:N0} items back to {Describe(by)}{DescribeFilter(filter)}", Ip(ctx));
+            return Results.Ok(new { count = n, byStatus = by, message = $"{n:N0} item{(n == 1 ? "" : "s")} restored." });
+        }).RequireAuthorization("Operate");
 
         api.MapGet("/jobs/{id}/tree", (string id, AppDb db) =>
         {
@@ -632,6 +661,25 @@ public static class Endpoints
     public sealed record PasswordBody(string? CurrentPassword, string? NewPassword);
     public sealed record TestBody(Location? Location, bool NeedWrite);
     public sealed record CreateJobBody(string? Name, Location? Source, Location? Destination);
+    public sealed record BulkBody(long[]? Ids, string? Status, string? Q, string? Group, string? Note, bool? AllInView);
+
+    private static (long[]? Ids, Exclusions.Filter? Filter) BulkTarget(BulkBody b, bool restore = false)
+    {
+        if (b.Ids is { Length: > 0 })
+        {
+            if (b.Ids.Length > 100_000) throw new ApiError("Too many items in one request; use \"all in this view\" instead.");
+            return (b.Ids, null);
+        }
+        if (b.AllInView != true) throw new ApiError("Choose items, or confirm all items in the current view.");
+        var status = restore ? ItemStatus.Excluded : string.IsNullOrEmpty(b.Status) || b.Status == "ALL" ? "EXCEPTIONS" : b.Status;
+        if (!restore && status != "EXCEPTIONS" && !ItemStatus.Excludable.Contains(status)) throw new ApiError($"Items with status {status} cannot be excluded.");
+        return (null, new Exclusions.Filter(status, b.Q, b.Group));
+    }
+
+    private static string Describe(Dictionary<string, int> by) => string.Join(", ", by.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value:N0} {kv.Key}"));
+    private static string DescribeFilter(Exclusions.Filter? f) => f == null ? " · ticked rows" :
+        $" · all in view: {f.Status}{(string.IsNullOrWhiteSpace(f.Group) ? "" : ", reason " + f.Group)}{(string.IsNullOrWhiteSpace(f.Q) ? "" : $", search \"{f.Q}\"")}";
+
     public sealed record ResolveBody(string? RecordId, string? Note, string? MappingFile = null);
     public sealed record ApproveBody(bool Acknowledge);
     public sealed record UserBody(string? UserName, string? DisplayName, string? Role, string? Password, bool? Active);

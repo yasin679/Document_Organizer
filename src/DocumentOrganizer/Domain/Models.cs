@@ -14,8 +14,10 @@ public static class Roles
 public static class ItemStatus
 {
     public const string Ready = "READY", Processed = "PROCESSED", Unmapped = "UNMAPPED", Missing = "MISSING",
-        Ambiguous = "AMBIGUOUS", Duplicate = "DUPLICATE", Failed = "FAILED", Invalid = "INVALID";
-    public static readonly string[] All = { Ready, Processed, Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed };
+        Ambiguous = "AMBIGUOUS", Duplicate = "DUPLICATE", Failed = "FAILED", Invalid = "INVALID", Excluded = "EXCLUDED";
+    public static readonly string[] All = { Ready, Processed, Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed, Excluded };
+    /// <summary>Exceptions a person can exclude (set aside with a note). EXCLUDED items are not copied and not counted as exceptions.</summary>
+    public static readonly string[] Excludable = { Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed };
 }
 
 public static class JobStatus
@@ -77,6 +79,8 @@ public sealed class JobConfig
     public bool KeepBlobMetadata { get; set; } = true;
     /// <summary>A File name cell that lists several files (separated by commas or semicolons) becomes one entry per file.</summary>
     public bool SplitMultipleFileNames { get; set; } = true;
+    /// <summary>When one file matches several mapping records: Flag (AMBIGUOUS, a person decides) | KeepAll (one copy per record).</summary>
+    public string AmbiguousRule { get; set; } = "Flag";
     /// <summary>Column mapping per uploaded mapping file (key = mapping file ID). Falls back to <see cref="Columns"/>.</summary>
     public Dictionary<string, ColumnMap>? FileColumns { get; set; }
 

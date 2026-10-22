@@ -46,6 +46,14 @@ public sealed class AppDb
         // v2.1: several mapping files per job; each item remembers which mapping file its record came from
         AddColumnIfMissing("jobs", "mappings_json", "TEXT");
         AddColumnIfMissing("items", "mapping_file", "TEXT");
+        // v2.1: exceptions set aside by a person (EXCLUDED), with the status they had and why
+        AddColumnIfMissing("items", "excluded_from", "TEXT");
+        AddColumnIfMissing("items", "excluded_by", "TEXT");
+        AddColumnIfMissing("items", "excluded_at", "TEXT");
+        AddColumnIfMissing("items", "exclusion_note", "TEXT");
+        // Exclusions are remembered per job, so a new scan sets the same items aside again (same file or record, same status)
+        Db.Execute(@"CREATE TABLE IF NOT EXISTS exclusions(job_id TEXT NOT NULL, item_key TEXT NOT NULL, from_status TEXT NOT NULL,
+            note TEXT, by_user TEXT, at TEXT, PRIMARY KEY(job_id, item_key))");
     }
 
     private void AddColumnIfMissing(string table, string column, string type)
@@ -141,7 +149,7 @@ public sealed class AppDb
     public void RefreshCounts(string jobId)
     {
         var c = CountByStatus(jobId);
-        var discovered = Convert.ToInt64(Db.Scalar("SELECT COUNT(*) FROM items WHERE job_id=@j AND source_key IS NOT NULL", ("j", jobId)) ?? 0L);
+        var discovered = Convert.ToInt64(Db.Scalar("SELECT COUNT(DISTINCT source_key) FROM items WHERE job_id=@j AND source_key IS NOT NULL", ("j", jobId)) ?? 0L);
         UpdateJob(jobId, ("counts_json", ToJson(c)), ("discovered", discovered));
     }
 }

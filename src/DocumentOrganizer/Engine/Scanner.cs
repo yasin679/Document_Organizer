@@ -125,6 +125,26 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
             ItemRow it;
             if (cands.Count == 0)
                 it = ItemRow.FromFile(f, ItemStatus.Unmapped, "No mapping record matches this file name (exact, case-insensitive or normalized).");
+            else if (cands.Count > 1 && cfg.AmbiguousRule == "KeepAll")
+            {
+                // Rule "Keep all": the file is copied once for every record that names it, each to its own destination,
+                // and every copy is its own item (and its own row in the reports).
+                foreach (var rec in cands)
+                {
+                    ItemRow k;
+                    if (claimed.TryGetValue(rec.Seq, out var other))
+                        k = ItemRow.FromFileAndRecord(f, rec, ItemStatus.Duplicate, $"Duplicate physical file: record {Ref(rec)} is already matched to {other}.");
+                    else
+                    {
+                        claimed[rec.Seq] = f.Key;
+                        k = Evaluate(f, rec, cfg, destTaken);
+                        if (k.Status == ItemStatus.Ready)
+                            k.Reason = $"File matches {cands.Count} mapping records ({string.Join(", ", cands.Take(5).Select(Ref))}); kept for each (rule: keep all).";
+                    }
+                    items.Add(k);
+                }
+                continue;
+            }
             else if (cands.Count > 1)
             {
                 it = ItemRow.FromFile(f, ItemStatus.Ambiguous, $"{cands.Count} mapping records match this file ({string.Join(", ", cands.Take(5).Select(Ref))}). Manual resolution required.");
@@ -156,7 +176,10 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
                 ? ItemRow.FromRecord(r, ItemStatus.Duplicate, $"Duplicate mapping record: same file, employee and type as record {Ref(first)}.")
                 : ItemRow.FromRecord(r, ItemStatus.Missing, $"Mapping exists but no source file with this name was found (repeats record {Ref(first)}, which is also missing)."));
 
-        // 7. Persist
+        // 7. Items that a person excluded before (same file or record, same status) are set aside again
+        Exclusions.ApplyRemembered(app, jobId, items);
+
+        // 8. Persist
         progress.Phase = "Saving results"; progress.Done = 0; progress.Total = items.Count;
         app.Db.InTransaction(() =>
         {
@@ -256,19 +279,22 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
 public sealed class ItemRow
 {
     public string? SourceKey, FileName, SourceEtag, SourceMd5, AccessTier, RecordId, EmployeeCode, EmployeeName, DocType, DocName,
-        Description, UploadedOn, ModuleCode, SubModuleCode, Year, DestKey, Status, Reason, CandidatesJson, MappingFile;
+        Description, UploadedOn, ModuleCode, SubModuleCode, Year, DestKey, Status, Reason, CandidatesJson, MappingFile,
+        ExcludedFrom, ExcludedBy, ExcludedAt, ExclusionNote;
     public long? SourceSize;
 
     public const string InsertSql = @"INSERT INTO items(job_id,source_key,file_name,source_size,source_etag,source_md5,access_tier,record_id,employee_code,employee_name,
-        doc_type,doc_name,description,uploaded_on,module_code,submodule_code,year,dest_key,status,reason,candidates_json,mapping_file)
-        VALUES(@job,@sk,@fn,@sz,@et,@md5,@tier,@rid,@emp,@ename,@type,@dname,@desc,@up,@mod,@sub,@year,@dest,@st,@reason,@cand,@mf)";
+        doc_type,doc_name,description,uploaded_on,module_code,submodule_code,year,dest_key,status,reason,candidates_json,mapping_file,
+        excluded_from,excluded_by,excluded_at,exclusion_note)
+        VALUES(@job,@sk,@fn,@sz,@et,@md5,@tier,@rid,@emp,@ename,@type,@dname,@desc,@up,@mod,@sub,@year,@dest,@st,@reason,@cand,@mf,@xf,@xb,@xa,@xn)";
 
     public (string, object?)[] Args(string jobId) => new (string, object?)[]
     {
         ("job", jobId), ("sk", SourceKey), ("fn", FileName), ("sz", SourceSize), ("et", SourceEtag), ("md5", SourceMd5), ("tier", AccessTier),
         ("rid", RecordId), ("emp", EmployeeCode), ("ename", EmployeeName), ("type", DocType), ("dname", DocName), ("desc", Description),
         ("up", UploadedOn), ("mod", ModuleCode), ("sub", SubModuleCode), ("year", Year), ("dest", DestKey),
-        ("st", Status), ("reason", Reason), ("cand", CandidatesJson), ("mf", MappingFile)
+        ("st", Status), ("reason", Reason), ("cand", CandidatesJson), ("mf", MappingFile),
+        ("xf", ExcludedFrom), ("xb", ExcludedBy), ("xa", ExcludedAt), ("xn", ExclusionNote)
     };
 
     public static ItemRow FromFile(SourceFile f, string status, string? reason) => new()

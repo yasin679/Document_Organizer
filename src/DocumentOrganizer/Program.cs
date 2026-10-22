@@ -25,6 +25,7 @@ builder.Services.AddSingleton<StorageFactory>();
 builder.Services.AddSingleton<Scanner>();
 builder.Services.AddSingleton<Processor>();
 builder.Services.AddSingleton<Reports>();
+builder.Services.AddSingleton<Exclusions>();
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddSingleton<DemoData>();
 

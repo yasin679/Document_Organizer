@@ -21,7 +21,7 @@ audience: Everyone installing, upgrading or evaluating Document Organizer
 
 Document Organizer copies employee documents into a clean, consistent structure, `EmployeeCode / DocumentType / Year / FileName`, using mapping files to identify each file. It works with **Azure Blob Storage**, **Amazon S3** (and S3-compatible storage) and **local or network folders**, in any combination. It is copy-only: source documents are never moved, changed or deleted.
 
-Version 2.1 fixes how MISSING and DUPLICATE are counted for real-world mapping files and adds **several mapping files per job**.
+Version 2.1 fixes how MISSING and DUPLICATE are counted for real-world mapping files, adds **several mapping files per job**, and lets operators **exclude exceptions in bulk** with a note.
 
 ## 2 New and fixed in v2.1
 
@@ -59,7 +59,30 @@ The DUPLICATE count now means "copied once already", and the MISSING count cover
 - New folder-template token **`{MappingFile}`** (file name without extension) keeps each file's documents apart.
 - New API endpoints: `POST /jobs/{id}/mappings` (add files) and `DELETE /jobs/{id}/mappings/{mappingId}`; `POST /jobs/{id}/mapping` now replaces all files with the uploaded file(s).
 
-### 2.5 Other changes
+### 2.5 Excluding exceptions in bulk (new)
+
+Exceptions that need no follow-up can be set aside in bulk, with a required note, instead of staying in the exception lists.
+
+- Works for every exception type: unmapped, missing, ambiguous, duplicate, validation errors and failed.
+- Three ways to choose: **tick rows** (with a select-page box), **everything in the current view** (tab and search), or a **whole reason** from the new *Exceptions by reason* list (for example 3,230 *Blank file name* at once).
+- Excluded items get the new status **EXCLUDED**. They are never copied, no longer count as exceptions, and keep their original status and reason. Both reports have four new columns at the end: Excluded From Status, Excluded By, Excluded At (UTC), Exclusion Note.
+- Exclusions are remembered: a new scan excludes the same file or record again while its status is unchanged.
+- **Restore** from the Excluded tab in the same three ways.
+- Allowed while a job is awaiting approval, paused or completed. Excluding the last exceptions of a completed job makes it **Completed**.
+- Every exclusion and restore is in the audit log with the count, statuses, filter and note. Viewers can see but not change exclusions.
+- On the real-job replay, excluding all 56,019 exceptions took 1.8 seconds, restoring them 1.5 seconds.
+- New API: `GET /jobs/{id}/reasons`, `POST /jobs/{id}/items/exclude`, `POST /jobs/{id}/items/restore`; `GET /jobs/{id}/items` accepts `group`.
+
+### 2.6 Rule for a file that matches several records (new)
+
+Step 4 has a new rule, **When a file matches several mapping records**:
+
+- **Flag as ambiguous** (default, as before): the file is AMBIGUOUS until a person picks the record.
+- **Keep all**: the file is copied once for every record that names it, each to its own destination, and each copy is its own row in the validation and reconciliation reports (so the final Excel lists every record). If two of those records would give the same destination path, one copy is kept and the other is DUPLICATE. The source file is still counted once in *Files discovered*.
+
+The rule is shown in the approval panel, the report summary and the audit entry for the rules.
+
+### 2.7 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.
 - Resolving an ambiguous file identifies the record by ID and mapping file.
@@ -93,7 +116,9 @@ Every one of the 14,657 file names in multi-file cells exists in the source. Sca
 | Test | Result |
 |---|---|
 | `tests/e2e-mapping.mjs`: split cells, real comma in a file name, `NULL`, repeats of missing and found records, two mapping files with different column names, remove and add, `{MappingFile}`, report column | 24 checks pass |
-| `tests/e2e-scenarios.mjs`: 20 kinds of File name cell; four mapping files with different columns, structure, encoding and date columns in one job; hand-mapping, per-file year rule, ambiguity across files with colliding IDs; upload checks, roles and locked jobs; workbook with a summary sheet; the same mapping through folder → Azure → S3 → folder | 76 checks pass |
+| `tests/e2e-exclusions.mjs`: exclude ticked rows, a whole reason and a searched view; note required; ready items refused; roles; remembered after a new scan (and not when the status changed); restore; completed job becomes Completed; report columns; audit | 28 checks pass |
+| Browser test of bulk exclusion: tick boxes, select count, note required, exclude a reason, exclude a view, Excluded tab, restore all | 14 checks pass, no browser errors |
+| `tests/e2e-scenarios.mjs`: 20 kinds of File name cell; four mapping files with different columns, structure, encoding and date columns in one job; hand-mapping, per-file year rule, ambiguity across files with colliding IDs; upload checks, roles and locked jobs; workbook with a summary sheet; the same mapping through folder → Azure → S3 → folder; rule for files matching several records (scenario F) | 87 checks pass |
 | `tests/e2e.mjs`: 7 jobs across folders, Azure and S3, including cross-provider | 159 checks pass, unchanged from v2.0 |
 | Upgrade: job with hand-edited columns made on v2.0, opened, rescanned and given a second file on v2.1 | 6 checks pass |
 | Browser test: upload four files, tabs, hand-mapping, save, resolve, remove, same file twice | 15 checks pass, no browser errors |
@@ -105,7 +130,8 @@ Every one of the 14,657 file names in multi-file cells exists in the source. Sca
 | Configuration | No changes needed |
 | Database | Columns `jobs.mappings_json` and `items.mapping_file` are added automatically at start-up |
 | Existing jobs | Keep their single mapping file and results. Scanning one again applies the new rules, so its counts can change as in section 3.1. |
-| Reports | Both reports have a new **Mapping File** column after Mapping Record ID. Update anything that reads columns by position. |
+| Reports | Both reports have a new **Mapping File** column after Mapping Record ID, and four exclusion columns at the end. Update anything that reads columns by position. |
+| Database | Also adds the `exclusions` table and four `excluded_*` / `exclusion_note` columns to `items` |
 | API | `POST /jobs/{id}/mapping` accepts several files and replaces all mapping files; use `POST /jobs/{id}/mappings` to add |
 
 ## 5 New in v2.0
