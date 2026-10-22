@@ -14,7 +14,15 @@ namespace DocumentOrganizer.Engine;
 /// </summary>
 public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> log)
 {
-    public sealed class Progress { public string Phase = ""; public long Done; public long Total; }
+    public sealed class Progress
+    {
+        public string Phase = ""; public long Done; public long Total;
+        public readonly DateTime Started = DateTime.UtcNow;
+        public DateTime PhaseStarted = DateTime.UtcNow;
+        public RateMeter Meter = new();
+        /// <summary>Starts a new step: its own speed and estimate.</summary>
+        public void SetPhase(string phase, long total) { Phase = phase; Done = 0; Total = total; PhaseStarted = DateTime.UtcNow; Meter = new RateMeter(); }
+    }
 
     public static string NormKey(string name)
     {
@@ -36,8 +44,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         if (mappings.Count == 0) throw new InvalidOperationException("Upload a mapping file first.");
 
         // 1. Read the records of every mapping file
-        progress.Phase = mappings.Count == 1 ? "Reading mapping file" : $"Reading {mappings.Count} mapping files";
-        progress.Total = mappings.Sum(m => m.Rows);
+        progress.SetPhase(mappings.Count == 1 ? "Reading mapping file" : $"Reading {mappings.Count} mapping files", mappings.Sum(m => m.Rows));
         var records = new List<Candidate>(progress.Total > 0 ? (int)progress.Total : 1000);
         foreach (var m in mappings)
         {
@@ -52,7 +59,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         log.LogInformation("{Job}: read {Count} mapping records from {Files} file(s)", jobId, records.Count, mappings.Count);
 
         // 2. List source (before matching, so a File name cell with several names can be told apart from one file whose name has a comma)
-        progress.Phase = "Listing source documents"; progress.Done = 0; progress.Total = 0;
+        progress.SetPhase("Listing source documents", 0);
         var files = new List<SourceFile>();
         await foreach (var f in src.ListAsync(ct))
         {
@@ -112,7 +119,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         }
 
         // 5. Match and validate
-        progress.Phase = "Matching and validating"; progress.Done = 0; progress.Total = files.Count;
+        progress.SetPhase("Matching and validating", files.Count);
         var claimed = new Dictionary<int, string>();      // record Seq -> source key
         var touched = new HashSet<int>();                  // records referenced by any file (incl. ambiguous)
         var destTaken = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -180,7 +187,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         Exclusions.ApplyRemembered(app, jobId, items);
 
         // 8. Persist
-        progress.Phase = "Saving results"; progress.Done = 0; progress.Total = items.Count;
+        progress.SetPhase("Saving results", items.Count);
         app.Db.InTransaction(() =>
         {
             app.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", jobId));

@@ -14,6 +14,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
 
     public bool IsRunning(string jobId) => _running.ContainsKey(jobId);
     public Scanner.Progress? ScanProgress(string jobId) => _scanProgress.TryGetValue(jobId, out var p) ? p : null;
+    private readonly ConcurrentDictionary<string, CopyProgress> _copyProgress = new();
+    public CopyProgress? CopyProgressOf(string jobId) => _copyProgress.TryGetValue(jobId, out var p) ? p : null;
 
     /// <summary>After a restart, interrupted work is marked so the user can resume it.</summary>
     public void RecoverAfterRestart()
@@ -77,7 +79,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
         {
             try
             {
-                await processor.RunAsync(jobId, user, cts.Token);
+                var cp = _copyProgress[jobId] = new CopyProgress();
+                await processor.RunAsync(jobId, user, cts.Token, cp);
                 if (cts.IsCancellationRequested)
                 {
                     app.UpdateJob(jobId, ("status", JobStatus.Paused), ("message", "Paused. Resume to continue with the remaining files."));
@@ -96,7 +99,7 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                 app.UpdateJob(jobId, ("status", JobStatus.Paused), ("message", "Processing stopped: " + ex.Message + " Fix the cause and resume."));
                 app.Audit("System", null, "Processing stopped", jobId, ex.Message);
             }
-            finally { _running.TryRemove(jobId, out _); app.RefreshCounts(jobId); }
+            finally { _running.TryRemove(jobId, out _); _copyProgress.TryRemove(jobId, out _); app.RefreshCounts(jobId); }
         });
     }
 

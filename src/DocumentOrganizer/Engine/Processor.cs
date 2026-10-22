@@ -13,8 +13,9 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
 {
     private sealed record Result(long Id, string Status, string? Reason, string? DestKey, string? SrcHash, string? DstHash, string? Method);
 
-    public async Task RunAsync(string jobId, string user, CancellationToken ct)
+    public async Task RunAsync(string jobId, string user, CancellationToken ct, CopyProgress? live = null)
     {
+        live ??= new CopyProgress();
         var job = app.GetJob(jobId) ?? throw new InvalidOperationException("Job not found.");
         var cfg = AppDb.Cfg(job.Str("config_json"));
         var settings = app.LoadSettings();
@@ -25,9 +26,19 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
         int batchSize = Math.Clamp(cfg.BatchSize, 100, 50000);
 
         long ready = Convert.ToInt64(app.Db.Scalar("SELECT COUNT(*) FROM items WHERE job_id=@j AND status='READY'", ("j", jobId)) ?? 0L);
+        long readyBytes = Convert.ToInt64(app.Db.Scalar("SELECT COALESCE(SUM(source_size),0) FROM items WHERE job_id=@j AND status='READY'", ("j", jobId)) ?? 0L);
         long done0 = Convert.ToInt64(app.Db.Scalar("SELECT COUNT(*) FROM items WHERE job_id=@j AND processed_at IS NOT NULL", ("j", jobId)) ?? 0L);
         app.UpdateJob(jobId, ("progress_total", ready + done0), ("progress_done", done0));
         long done = done0;
+        // Live figures for the screen: speed and time left are measured on this run only (files and bytes)
+        live.Total = ready + done0; live.Done = done0; live.BytesTotal = readyBytes; live.BytesDone = 0;
+        live.Meter = new RateMeter(done0, 0);
+        foreach (var r in app.Db.Query("SELECT status, COUNT(*) n FROM items WHERE job_id=@j AND processed_at IS NOT NULL GROUP BY status", ("j", jobId)))
+        {
+            if (r.Str("status") == ItemStatus.Processed) live.Copied = r.Long("n");
+            else if (r.Str("status") == ItemStatus.Duplicate) live.Skipped = r.Long("n");
+            else if (r.Str("status") == ItemStatus.Failed) live.Failed = r.Long("n");
+        }
 
         while (!ct.IsCancellationRequested)
         {
@@ -38,14 +49,17 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
                 ("t", DateTime.UtcNow.ToString("o")), ("j", jobId), ("a", batch[0].Long("id")), ("b", batch[^1].Long("id")));
             var pending = new List<Result>();
             var gate = new object();
+            var lastFlush = DateTime.UtcNow;
             void Flush(bool force)
             {
                 List<Result> toWrite;
                 lock (gate)
                 {
-                    if (!force && pending.Count < 250) return;
+                    // Save results every 250 files or every 2 seconds, whichever comes first, so progress on screen moves steadily
+                    if (!force && pending.Count < 250 && (DateTime.UtcNow - lastFlush).TotalSeconds < 2) return;
                     toWrite = pending.Where(r => r.Status != ItemStatus.Ready).ToList();
                     pending.Clear();
+                    lastFlush = DateTime.UtcNow;
                 }
                 if (toWrite.Count == 0) return;
                 var now = DateTime.UtcNow.ToString("o");
@@ -65,6 +79,15 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
                 {
                     var r = await ProcessOne(jobId, item, cfg, src, dst, overwriteAllowed, token);
                     lock (gate) pending.Add(r);
+                    if (r.Status != ItemStatus.Ready)
+                    {
+                        Interlocked.Increment(ref live.Done);
+                        Interlocked.Add(ref live.BytesDone, item.LongN("source_size") ?? 0);
+                        if (r.Status == ItemStatus.Processed) Interlocked.Increment(ref live.Copied);
+                        else if (r.Status == ItemStatus.Duplicate) Interlocked.Increment(ref live.Skipped);
+                        else if (r.Status == ItemStatus.Failed) Interlocked.Increment(ref live.Failed);
+                        live.Meter.Mark(Interlocked.Read(ref live.Done), Interlocked.Read(ref live.BytesDone));
+                    }
                     Flush(false);
                 });
             }
@@ -122,25 +145,35 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
                 if (sp != null) foreach (var (k, v) in sp.Metadata) meta.TryAdd(k, v);
             }
 
-            bool serverSide = await dst.TryServerCopyAsync(src, key, etag, destKey, meta, overwrite, ct);
+            string? srcHash = null, dstHash = null, method = null;
+            bool verify = !cfg.Integrity.Equals("None", StringComparison.OrdinalIgnoreCase);
+            // Folder to folder with an integrity check: copy by streaming and hash the source while it is read,
+            // so each source file is read once instead of twice (copy, then hash). Cloud server-side copies are unchanged.
+            bool hashWhileCopying = verify && src is LocalStore && dst is LocalStore;
+            bool serverSide = !hashWhileCopying && await dst.TryServerCopyAsync(src, key, etag, destKey, meta, overwrite, ct);
             if (!serverSide)
             {
                 var sp = await src.GetPropsAsync(key, ct) ?? throw new FileNotFoundException("Source file no longer exists.");
                 if (etag != null && sp.ETag != null && sp.ETag.Trim('"') != etag.Trim('"')) throw new SourceChangedException(key);
                 await using var s = await src.OpenReadAsync(key, ct);
-                await dst.WriteAsync(destKey, s, meta, overwrite, ct);
+                if (verify)
+                {
+                    using var hs = new HashingReadStream(s, cfg.Integrity);
+                    await dst.WriteAsync(destKey, hs, meta, overwrite, ct);
+                    srcHash = hs.Result();
+                }
+                else await dst.WriteAsync(destKey, s, meta, overwrite, ct);
             }
 
-            string? srcHash = null, dstHash = null, method = null;
-            if (!cfg.Integrity.Equals("None", StringComparison.OrdinalIgnoreCase))
+            if (verify)
             {
                 method = cfg.Integrity;
-                srcHash = await Hashing.HashAsync(src, key, method, ct);
+                srcHash ??= await Hashing.HashAsync(src, key, method, ct);
                 dstHash = await Hashing.HashAsync(dst, destKey, method, ct);
                 if (srcHash != dstHash)
                     return new(id, ItemStatus.Failed, $"Integrity check failed: {method} of destination does not match source.", destKey, srcHash, dstHash, method);
             }
-            return new(id, ItemStatus.Processed, serverSide ? null : "Copied by streaming (server-side copy not available for this source/destination pair).", destKey, srcHash, dstHash, method);
+            return new(id, ItemStatus.Processed, serverSide || hashWhileCopying ? null : "Copied by streaming (server-side copy not available for this source/destination pair).", destKey, srcHash, dstHash, method);
         }
         catch (DestinationExistsException) { return new(id, ItemStatus.Duplicate, "Destination already exists. Skipped and reported.", null, null, null, null); }
         catch (SourceChangedException) { return new(id, ItemStatus.Failed, "Source file changed after the scan (ETag mismatch), so it was not copied. Retry copies its current version.", null, null, null, null); }

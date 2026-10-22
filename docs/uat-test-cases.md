@@ -137,6 +137,9 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 
 | ID | Pri | Test | Steps | Expected result | P/F |
 |---|---|---|---|---|---|
+| UAT-37a | M | Time left while scanning | Scan a job with a large mapping file or source | Step 5 shows *Step n of 4*, the time left for steps with a known total, the speed and the time taken | |
+| UAT-37b | M | Time left while copying | Approve a job with many files and watch step 7 | After a few seconds: time left with a finishing time, files/s and MB/s; counts move every few seconds | |
+| UAT-37c | H | Copy counts | Copy into a destination that already holds some of the files (rule Skip) | *Already at destination (skipped)* counts only those files; *Copied* + skipped + failed + still to copy = total | |
 | UAT-38 | M | Copy completes | Wait for the job to finish | Completed with exceptions; 459 processed, 0 failed | |
 | UAT-39 | M | Source untouched | Compare the demo source folder before and after | Same file count, names and dates | |
 | UAT-40 | M | Output structure | Open the destination folder | `EmployeeCode/DocumentType/Year/FileName` folders as previewed | |

@@ -5,6 +5,25 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => (n ?? 0).toLocaleString('en-IN');
 const whenShort = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+/** 75 -> "1 min 15 s", 7300 -> "2 h 2 min" */
+const dur = s => {
+  if (s == null) return '';
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d) return `${d} d ${h % 24} h`;
+  if (h) return `${h} h ${String(m % 60).padStart(2, '0')} min`;
+  return s < 600 ? `${m} min ${s % 60} s` : `${m} min`;
+};
+/** Clock time the work should finish ("21:40", or "Fri 09:15" when not today). */
+const finishAt = s => {
+  const t = new Date(Date.now() + s * 1000), today = new Date();
+  const hm = t.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return t.toDateString() === today.toDateString() ? hm : `${t.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })} ${hm}`;
+};
+const size = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : b >= 1e3 ? Math.round(b / 1e3) + ' KB' : (b || 0) + ' B';
+/** "About 12 min left (finishes around 21:40)" or "Working out the time left…" */
+const etaText = (eta, done) => eta == null ? (done ? 'Working out the time left…' : 'Starting…') : eta === 0 ? 'Finishing…' : `About <b>${dur(eta)}</b> left · finishes around <b>${finishAt(eta)}</b>`;
 const when = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED', 'EXCLUDED'];
 const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed', EXCLUDED: 'Excluded' };
@@ -315,9 +334,14 @@ function jobRules(job) {
 function jobScan(job) {
   const s = job.scan || { phase: 'Starting', done: 0, total: 0 };
   const pct = s.total ? Math.min(100, 100 * s.done / s.total) : 0;
+  const unit = /listing/i.test(s.phase) ? 'files found' : /mapping/i.test(s.phase) ? 'rows' : 'items';
+  const steps = ['Reading', 'Listing', 'Matching', 'Saving'];
+  const stepNo = Math.max(1, steps.findIndex(w => s.phase.startsWith(w)) + 1);
   return `<div class="panel"><div class="panel-h"><h2>Scanning and validating</h2><span class="pill j-Scanning">Running</span></div><div class="panel-b">
-    <div class="row-between"><b>${esc(s.phase)}</b><span class="small muted num">${fmt(s.done)}${s.total ? ' of ' + fmt(s.total) : ''}</span></div>
+    <div class="row-between"><b>Step ${stepNo} of 4: ${esc(s.phase)}</b><span class="small muted num">${fmt(s.done)}${s.total ? ' of ' + fmt(s.total) : ''} ${unit}</span></div>
     <div class="prog"><i style="width:${s.total ? pct : 8}%"></i></div>
+    <div class="row-between small"><span>${s.total ? etaText(s.etaSeconds, s.done) : 'Counting the files in the source; the time left is shown once matching starts.'}</span>
+      <span class="muted num">${s.rate ? fmt(Math.round(s.rate)) + ' ' + unit + '/s · ' : ''}this step ${dur(s.phaseElapsedSeconds)} · total ${dur(s.elapsedSeconds)}</span></div>
     <div class="small muted">Started ${when(job.scanStartedAt)}. You can leave this page; the scan continues in the background.</div>
   </div></div>`;
 }
@@ -439,18 +463,22 @@ function buildTree(t) {
 }
 
 function jobProcess(job) {
-  const c = job.counts, p = job.progress;
+  const c = job.counts, p = job.progress, r = job.copyResult || {};
   const pct = p.total ? 100 * p.done / p.total : 0;
   const running = job.status === 'Processing';
+  const left = Math.max(0, (p.total || 0) - (p.done || 0));
   return `<div class="panel"><div class="panel-h"><h2>${running ? 'Copying documents' : job.status === 'Paused' ? 'Paused' : 'Copy finished'}</h2>${jobPill(job.status)}</div><div class="panel-b">
     <div class="row-between"><span style="font:600 30px var(--f-display)" class="num">${pct.toFixed(0)}%</span><span class="small muted num">${fmt(p.done)} of ${fmt(p.total)} files</span></div>
     <div class="prog" style="height:12px"><i style="width:${pct}%"></i></div>
-    <div class="grid g3">
-      <div><div class="lbl">Processed</div><div class="num" style="font:600 20px var(--f-display);color:var(--ok)">${fmt(c.PROCESSED)}</div></div>
-      <div><div class="lbl">Failed</div><div class="num" style="font:600 20px var(--f-display);color:var(--bad)">${fmt(c.FAILED)}</div></div>
-      <div><div class="lbl">Skipped as duplicate</div><div class="num" style="font:600 20px var(--f-display)">${fmt(c.DUPLICATE)}</div></div>
+    ${running && p.live ? `<div class="row-between small"><span>${etaText(p.etaSeconds, p.done)}</span>
+      <span class="muted num">${p.rate ? `${p.rate < 10 ? p.rate.toFixed(1) : fmt(Math.round(p.rate))} files/s · ${size(p.bytesRate)}/s · ` : ''}${p.bytesTotal ? `${size(p.bytesDone)} of ${size(p.bytesTotal)} · ` : ''}running ${dur(p.elapsedSeconds)}</span></div>` : ''}
+    <div class="grid g4">
+      <div><div class="lbl">Copied</div><div class="num" style="font:600 20px var(--f-display);color:var(--ok)">${fmt(r.processed)}</div></div>
+      <div><div class="lbl">Already at destination (skipped)</div><div class="num" style="font:600 20px var(--f-display)">${fmt(r.skipped)}</div></div>
+      <div><div class="lbl">Failed</div><div class="num" style="font:600 20px var(--f-display);color:var(--bad)">${fmt(r.failed)}</div></div>
+      <div><div class="lbl">Still to copy</div><div class="num" style="font:600 20px var(--f-display)">${fmt(left)}</div></div>
     </div>
-    <div class="small muted">Approved by ${esc(job.approvedBy || '—')} on ${when(job.approvedAt)}. Progress is saved after each batch; if the application restarts, resume continues from the remaining files.</div>
+    <div class="small muted">Approved by ${esc(job.approvedBy || '—')} on ${when(job.approvedAt)}. ${fmt(S.meta.parallelCopies || 8)} files are copied at the same time; results are saved every few seconds, and if the application restarts, resume continues from the remaining files.</div>
   </div></div>
   <div class="foot"><div style="display:flex;gap:8px">${canOperate() && running ? '<button class="btn" data-action="pause">Pause</button>' : ''}${canOperate() && job.status === 'Paused' ? '<button class="btn primary" data-action="resume">Resume</button>' : ''}
   ${canOperate() && !running && c.FAILED ? `<button class="btn" data-action="retry">Retry ${fmt(c.FAILED)} failed</button>` : ''}</div>

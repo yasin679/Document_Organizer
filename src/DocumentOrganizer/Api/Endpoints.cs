@@ -94,7 +94,7 @@ public static class Endpoints
                 allowedLocalRoots = opt.AllowedLocalRoots, demoEnabled = opt.EnableDemoData,
                 fields = MappingFile.Fields.Select(f => new { field = f.Field, label = f.Label }),
                 tokens = Template.Tokens,
-                version = AppVersion
+                version = AppVersion, parallelCopies = Math.Clamp(s.MaxParallelCopies, 1, 64)
             });
         }).RequireAuthorization("View");
 
@@ -641,6 +641,41 @@ public static class Endpoints
     {
         var id = j.Str("id")!;
         var sp = js.ScanProgress(id);
+        var cp = js.CopyProgressOf(id);
+        object? scan = null;
+        if (sp != null)
+        {
+            sp.Meter.Mark(sp.Done);
+            var (perSec, _) = sp.Meter.Rate();
+            scan = new
+            {
+                phase = sp.Phase, done = sp.Done, total = sp.Total, rate = Math.Round(perSec, 1),
+                etaSeconds = sp.Total > 0 ? sp.Meter.EtaSeconds(sp.Total - sp.Done) : null,
+                phaseElapsedSeconds = (long)(DateTime.UtcNow - sp.PhaseStarted).TotalSeconds,
+                elapsedSeconds = (long)(DateTime.UtcNow - sp.Started).TotalSeconds
+            };
+        }
+        object progress;
+        if (cp != null)
+        {
+            cp.Meter.Mark(Interlocked.Read(ref cp.Done), Interlocked.Read(ref cp.BytesDone));
+            var (perSec, bytesPerSec) = cp.Meter.Rate();
+            long done = Interlocked.Read(ref cp.Done), bytesDone = Interlocked.Read(ref cp.BytesDone);
+            progress = new
+            {
+                done, total = cp.Total, bytesDone, bytesTotal = cp.BytesTotal,
+                copied = cp.Copied, skipped = cp.Skipped, failed = cp.Failed,
+                rate = Math.Round(perSec, 1), bytesRate = (long)bytesPerSec,
+                etaSeconds = cp.Meter.EtaSeconds(cp.Total - done, Math.Max(0, cp.BytesTotal - bytesDone)),
+                elapsedSeconds = (long)(DateTime.UtcNow - cp.Meter.Started).TotalSeconds, live = true
+            };
+        }
+        else progress = new { done = j.Long("progress_done"), total = j.Long("progress_total"), live = false };
+        // What the copy step did (copied, skipped because already at the destination, failed). Live figures while it runs.
+        var run = cp != null
+            ? new Dictionary<string, long> { [ItemStatus.Processed] = cp.Copied, [ItemStatus.Duplicate] = cp.Skipped, [ItemStatus.Failed] = cp.Failed }
+            : db.Db.Query("SELECT status, COUNT(*) n FROM items WHERE job_id=@j AND processed_at IS NOT NULL GROUP BY status", ("j", id))
+                .ToDictionary(r => r.Str("status")!, r => r.Long("n"));
         return new
         {
             id, name = j.Str("name"), status = j.Str("status"), message = j.Str("message"),
@@ -651,8 +686,8 @@ public static class Endpoints
             mappings = AppDb.Mappings(j).Select(MappingDto),
             createdBy = j.Str("created_by"), createdAt = j.Str("created_at"), scanStartedAt = j.Str("scan_started_at"), scanEndedAt = j.Str("scan_ended_at"),
             approvedBy = j.Str("approved_by"), approvedAt = j.Str("approved_at"), startedAt = j.Str("started_at"), endedAt = j.Str("ended_at"),
-            progress = new { done = j.Long("progress_done"), total = j.Long("progress_total") },
-            scan = sp == null ? null : new { phase = sp.Phase, done = sp.Done, total = sp.Total },
+            progress, scan,
+            copyResult = new { processed = run.GetValueOrDefault(ItemStatus.Processed), skipped = run.GetValueOrDefault(ItemStatus.Duplicate), failed = run.GetValueOrDefault(ItemStatus.Failed) },
             running = js.IsRunning(id), discovered = j.Long("discovered"),
             counts = db.CountByStatus(id)
         };

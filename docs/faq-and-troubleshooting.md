@@ -35,6 +35,10 @@ One row per document with at least an employee code, a document type and a file 
 
 Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder. Files can also differ in column order, extra columns, title rows, CSV delimiter, file type (`.xlsx` and `.csv` together) and date column (a file with only a Year column is fine).
 
+### Copying is slow, or the numbers jump by 250 at a time
+
+Earlier builds saved results every 250 files, so on slow drives the screen could stand still for a minute and then jump. Results are now saved every two seconds, and step 7 shows the speed and the time left. The copy itself runs several files at once (**Parallel copies**, 8 by default). If it is still slow, the drives are usually the limit: see *Copying faster* in User Guide section 11 (parallel copies to suit the drive, a different destination drive, antivirus exclusions).
+
 ### One file is named by several records. Can it go to each of them?
 
 Yes. In step 4, under **When a file matches several mapping records**, choose **Keep all** and scan. The file is copied once per record, each to its own destination, and each copy is its own row in the reconciliation report. With the default **Flag as ambiguous**, the file waits for a person to choose one record.

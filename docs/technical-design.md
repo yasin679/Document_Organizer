@@ -236,6 +236,12 @@ Example: record E00879, type Medical Certificate, uploaded 25-Nov-2021, file `e0
 8. Cloud destinations get metadata `docorgjobid`, `docorgrecordid` and `docorgemployeecode`. The source object's own metadata is kept if selected; names are adjusted to each provider's rules (Azure metadata names must be valid identifiers).
 9. The item is marked PROCESSED or FAILED with the reason.
 
+### 4.7a Speed and time left
+
+- **Hash while copying.** Folder to folder with an integrity check, the source is streamed to the destination through a hashing stream (1 MB reads), so each source file is read once; the destination is then read once to verify. Before, the source was read twice (copy, then hash). Cloud server-side copies are unchanged; other streaming copies (for example folder to S3) also hash the source on the way.
+- **Results saved every 2 seconds** or every 250 files, whichever comes first (was every 250 files only).
+- **Time left.** A sliding-window meter (last two minutes) of items and bytes. Copying: time left = bytes still to copy ÷ bytes per second (falls back to files ÷ files per second when sizes are unknown). Scanning: per step, items left ÷ items per second, for steps with a known total. Live figures are kept in memory while a job runs and returned by `GET /jobs/{id}` as `progress` (`done`, `total`, `bytesDone`, `bytesTotal`, `copied`, `skipped`, `failed`, `rate`, `bytesRate`, `etaSeconds`, `elapsedSeconds`, `live`) and `scan` (`phase`, `done`, `total`, `rate`, `etaSeconds`, `phaseElapsedSeconds`, `elapsedSeconds`). `copyResult` gives the copy step's processed, skipped and failed counts.
+
 ### 4.8 Resume and retry
 
 At start-up, any job left in Processing is marked Paused. On resume, items with `started_at` set but not finished are checked: if the destination exists and its SHA-256 equals the source, the item is marked PROCESSED without copying again. **Retry failed** refreshes each failed item's ETag and size from the source and copies only those items.

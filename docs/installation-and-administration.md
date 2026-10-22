@@ -317,7 +317,7 @@ Administrators change these under **Settings**. Every change is written to the a
 | Amazon S3 | On | Allows S3 sources and destinations |
 | Local or network folders | On | Allows folder sources and destinations |
 | Allow overwrite on duplicate | Off | Makes the Overwrite duplicate rule available to operators |
-| Parallel copies | 8 | Files copied at the same time (1 to 64). Lower it if storage reports throttling (HTTP 503 or `SlowDown`). |
+| Parallel copies | 8 | Files copied at the same time (1 to 64). Raise it to 16 to 32 for SSD, NVMe, network shares and cloud storage; lower it to 2 to 4 for a single external hard disk, and if storage reports throttling (HTTP 503 or `SlowDown`). |
 | Keep jobs and reports | 365 days | Older jobs, their items and mapping files are removed at start-up |
 | Keep audit log | 7 years | Audit events are kept at least this long (minimum 365 days) |
 

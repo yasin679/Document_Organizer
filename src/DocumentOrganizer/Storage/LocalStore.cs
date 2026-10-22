@@ -56,7 +56,7 @@ public sealed class LocalStore : IDocumentStore
         try
         {
             await using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, true))
-                await content.CopyToAsync(fs, ct);
+                await content.CopyToAsync(fs, Hashing.BufferSize, ct);
             File.Move(tmp, full, overwrite);
         }
         catch (IOException) when (!overwrite && File.Exists(full)) { throw new DestinationExistsException(key); }

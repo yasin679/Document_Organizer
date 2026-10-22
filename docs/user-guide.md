@@ -311,8 +311,10 @@ Step 5 runs by itself. The application reads the mapping file, lists every file 
 
 | # | Item | Description |
 |---|---|---|
-| 1 | Current phase | Reading mapping file, Listing source documents, Matching and validating, then Saving results. |
-| 2 | Progress | Items handled so far. |
+| 1 | Current step | Step 1 of 4 *Reading mapping file*, 2 *Listing source documents*, 3 *Matching and validating*, 4 *Saving results*. |
+| 2 | Progress | Rows, files or items handled so far in this step, out of the total when it is known. |
+| 3 | Time left | *About 2 min left · finishes around 19:20* for the current step, worked out from the speed of the last two minutes. While the source is being listed the total is not known yet, so the number of files found is shown instead. |
+| 4 | Speed and time taken | Rows or files per second, how long this step has run, and the total time of the scan so far. |
 
 In testing, a 66,000-row mapping file with 60,000 files was scanned and validated in about 3 seconds from a local folder. Cloud sources take longer because files are listed in pages (5,000 per page on Azure, 1,000 per page on S3).
 
@@ -436,8 +438,22 @@ Step 7 copies READY files in batches. When source and destination are in the sam
 | # | Item | Description |
 |---|---|---|
 | 1 | Progress | Percentage and number of files done out of the total. |
-| 2 | Counts | Processed (copied and verified), Failed, and Skipped as duplicate (the file already existed at the destination). |
-| 3 | **Pause** | Stops after the files in progress finish. |
+| 2 | Time left | *About 1 h 20 min left · finishes around 21:40*. Worked out from the speed of the last two minutes and the size of the files still to copy, so it adjusts if the pace changes (for example many large scans near the end). |
+| 3 | Speed | Files per second, megabytes per second, data copied so far out of the total, and how long the copy has run. |
+| 4 | Counts | **Copied** (copied and verified), **Already at destination (skipped)** (the file existed there and the duplicate rule is Skip), **Failed**, and **Still to copy**. These count only what the copy step did; duplicates found during the scan are in the review and reconciliation screens. |
+| 5 | **Pause** | Stops after the files in progress finish. |
+
+Several files are copied at the same time (8 by default) and results are saved every two seconds, so the counts move steadily.
+
+> [!TIP]
+> **Copying faster**
+>
+> Speed depends mostly on the drives or storage involved, not on the application. Folder-to-folder copies with an integrity check read each source file once (it is checked while it is copied) and read the copy back once to verify it. To go faster:
+>
+> - Ask an administrator to change **Parallel copies** in Settings: 16 to 32 for SSD, NVMe or network storage; 2 to 4 for a single external USB hard disk (more at once makes a hard disk slower).
+> - Copy to a different physical drive from the source when you can.
+> - Exclude the source and destination folders from real-time antivirus scanning for the duration of the copy, if your IT policy allows it; scanning every new file can slow a copy several times over.
+> - Use **Content-MD5** instead of SHA-256 only for cloud storage that already holds checksums; for folders both read the files.
 
 ![Figure 19: A paused job](images/19-paused.jpg)
 

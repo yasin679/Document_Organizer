@@ -82,7 +82,15 @@ Step 4 has a new rule, **When a file matches several mapping records**:
 
 The rule is shown in the approval panel, the report summary and the audit entry for the rules.
 
-### 2.7 Other changes
+### 2.7 Time left and copy speed (new)
+
+- **Time left** on the scan (per step: *Step 1 of 4 Reading mapping file*, and so on) and on the copy, with the expected finishing time, speed (files/s, MB/s, rows/s) and time taken. Estimates use the pace of the last two minutes and, for copies, the size of the files still to copy. Tested on 3,000 files (2.2 GB) copied to S3: the estimate shown after 3 seconds (37 seconds left) was within about 6 seconds of the actual finish.
+- **Steady progress.** Results are saved every 2 seconds instead of every 250 files, so the screen no longer stands still and then jumps by 250.
+- **Fewer reads.** Folder-to-folder copies with an integrity check hash the source while copying it, so each source file is read once instead of twice. Hashing reads 1 MB at a time instead of 4 KB.
+- **Clearer counts** in step 7: Copied, Already at destination (skipped), Failed and Still to copy now count only what the copy step did. Before, *Skipped as duplicate* also included duplicates found during the scan.
+- The running version is shown at the bottom of the side bar, and `start.cmd` / `start.sh` stop with a message when port 5080 is already in use by another copy.
+
+### 2.8 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.
 - Resolving an ambiguous file identifies the record by ID and mapping file.
