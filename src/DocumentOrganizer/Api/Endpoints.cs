@@ -93,7 +93,8 @@ public static class Endpoints
                 localEnabled = s.LocalSourceEnabled, azureEnabled = s.AzureBlobEnabled, s3Enabled = s.S3Enabled, allowOverwrite = s.AllowOverwrite,
                 allowedLocalRoots = opt.AllowedLocalRoots, demoEnabled = opt.EnableDemoData,
                 fields = MappingFile.Fields.Select(f => new { field = f.Field, label = f.Label }),
-                tokens = Template.Tokens
+                tokens = Template.Tokens,
+                version = AppVersion
             });
         }).RequireAuthorization("View");
 
@@ -661,6 +662,9 @@ public static class Endpoints
     public sealed record PasswordBody(string? CurrentPassword, string? NewPassword);
     public sealed record TestBody(Location? Location, bool NeedWrite);
     public sealed record CreateJobBody(string? Name, Location? Source, Location? Destination);
+    /// <summary>The application version (from the project file), shown in the side bar so people can see which build is running.</summary>
+    public static readonly string AppVersion = typeof(Endpoints).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
+
     public sealed record BulkBody(long[]? Ids, string? Status, string? Q, string? Group, string? Note, bool? AllInView);
 
     private static (long[]? Ids, Exclusions.Filter? Filter) BulkTarget(BulkBody b, bool restore = false)

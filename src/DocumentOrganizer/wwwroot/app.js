@@ -734,6 +734,7 @@ window.addEventListener('hashchange', route);
     S.me = await api('GET', '/api/auth/me');
     S.meta = await api('GET', '/api/meta');
   } catch { return; }
+  const ver = $('#ver'); if (ver) ver.textContent = `Version ${S.meta.version}`;
   if (!location.hash) location.hash = '#/dashboard';
   route();
 })();

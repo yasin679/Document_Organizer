@@ -10,6 +10,18 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem Another copy (an older version, or this one in another window) may already be using port 5080.
+rem The browser would then show that copy, not this one.
+netstat -ano | findstr /R /C:":5080 .*LISTENING" >nul 2>nul
+if not errorlevel 1 (
+  echo.
+  echo  Port 5080 is already in use, probably by another copy of Document Organizer.
+  echo  Close its window ^(or end "dotnet" in Task Manager^), then run this again.
+  echo.
+  pause
+  exit /b 1
+)
+
 echo.
 echo  Document Organizer
 echo  ------------------
