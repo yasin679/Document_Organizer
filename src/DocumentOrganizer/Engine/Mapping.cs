@@ -252,8 +252,10 @@ public static class Template
         s = Regex.Replace(s, @"[\\/:*?""<>|\x00-\x1F]", "_").Trim();
         s = s.TrimEnd('.', ' ');
         if (s.Length > 150) s = isFile ? s[..100] + s[^Math.Min(40, s.Length - 100)..] : s[..150];
-        var reserved = new[] { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3" };
-        if (reserved.Contains(Path.GetFileNameWithoutExtension(s).ToUpperInvariant())) s = "_" + s;
+        var reserved = new[] { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
+        // Windows treats a name as a device when the part before the first dot is reserved (CON, CON.txt, con.tar.gz)
+        if (reserved.Contains(s.Split('.')[0].Trim().ToUpperInvariant())) s = "_" + s;
         return s;
     }
 }

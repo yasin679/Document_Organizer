@@ -29,7 +29,9 @@ const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUP
 const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed', EXCLUDED: 'Excluded' };
 const EXCLUDABLE = ['UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED'];
 const pill = s => `<span class="pill s-${esc(s)}">${esc(s)}</span>`;
-const jobPill = s => { const c = s === 'Completed' ? 'j-Completed' : s === 'Completed with exceptions' ? 'j-exceptions' : s === 'Awaiting approval' ? 'j-Awaiting' : 'j-' + (s || '').split(' ')[0]; return `<span class="pill ${c}">${esc(s)}</span>`; };
+const jobPill = (s, submittedBy) => { const c = s === 'Completed' ? 'j-Completed' : s === 'Completed with exceptions' ? 'j-exceptions' : s === 'Awaiting approval' ? 'j-Awaiting' : 'j-' + (s || '').split(' ')[0]; return `<span class="pill ${c}">${esc(s === 'Awaiting approval' && submittedBy ? 'Submitted for approval' : s)}</span>`; };
+const isMe = u => !!u && !!S.me && u.toLowerCase() === S.me.userName.toLowerCase();
+const isMakerOf = job => (job.makers || []).some(isMe);
 
 const S = { me: null, meta: null, job: null, jobStep: {}, items: { status: 'EXCEPTIONS', q: '', page: 1, group: '' }, sel: new Set(), poll: null, demo: null, draft: null, mapping: {} };
 const canOperate = () => S.me && S.me.role !== 'Viewer';
@@ -114,7 +116,7 @@ async function vDashboard() {
 function jobsTable(rows) {
   if (!rows.length) return `<div class="empty">No jobs yet.</div>`;
   return `<div class="tbl-wrap"><table><thead><tr><th>Job ID</th><th>Label and source</th><th>Destination</th><th>Volume</th><th>Status</th><th>Started / ended</th><th>Operator</th></tr></thead><tbody>${
-    rows.map(j => `<tr class="click" data-href="#/job/${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="lbl-cell">${esc(j.name)}<div class="small muted src-cell" title="${esc(j.source)}">${esc(j.source)}</div></td><td class="small muted src-cell" title="${esc(j.destination)}">${esc(j.destination)}</td><td class="num">${fmt(j.volume)}</td><td>${jobPill(j.status)}</td><td class="small nowrap">${whenShort(j.startedAt || j.createdAt)}<div class="muted">${j.endedAt ? whenShort(j.endedAt) : 'not finished'}</div></td><td>${esc(j.createdBy)}</td></tr>`).join('')}</tbody></table></div>`;
+    rows.map(j => `<tr class="click" data-href="#/job/${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="lbl-cell">${esc(j.name)}<div class="small muted src-cell" title="${esc(j.source)}">${esc(j.source)}</div></td><td class="small muted src-cell" title="${esc(j.destination)}">${esc(j.destination)}</td><td class="num">${fmt(j.volume)}</td><td>${jobPill(j.status, j.submittedBy)}</td><td class="small nowrap">${whenShort(j.startedAt || j.createdAt)}<div class="muted">${j.endedAt ? whenShort(j.endedAt) : 'not finished'}</div></td><td>${esc(j.createdBy)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 async function vJobs() {
@@ -208,9 +210,11 @@ async function loadJob(keepScroll) {
   else if (step === 7) body = jobProcess(job);
   else body = await jobRecon(job);
   const actions = (isAdmin() || (job.status === 'Draft' && job.createdBy === S.me.userName)) && !job.running ? '<button class="btn sm danger" data-action="delete-job">Delete job</button>' : '';
-  $('#main').innerHTML = header(`${esc(job.id)}`, esc(job.name), `${jobPill(job.status)} ${actions}`) +
+  const locked = job.submittedBy && job.status === 'Awaiting approval'
+    ? `<div class="callout" style="margin-bottom:16px"><div><b>Submitted for approval</b> by ${esc(job.submittedBy)} on ${when(job.submittedAt)}${job.submitNote ? ` · “${esc(job.submitNote)}”` : ''}. The job cannot be changed until a different person approves or rejects it${isMe(job.submittedBy) || isAdmin() ? ', or it is withdrawn' : ''}.</div>${(isMe(job.submittedBy) || isAdmin()) && canOperate() ? '<button class="btn sm" data-action="withdraw">Withdraw</button>' : ''}</div>` : '';
+  $('#main').innerHTML = header(`${esc(job.id)}`, esc(job.name), `${jobPill(job.status, job.submittedBy)} ${actions}`) +
     `<div class="small muted" style="margin:-10px 0 14px">Source <span class="mono">${esc(job.sourceText)}</span> → Destination <span class="mono">${esc(job.destinationText)}</span></div>` +
-    stepperHtml(step, job) + (job.message ? `<div class="callout warn" style="margin-bottom:16px">${esc(job.message)}</div>` : '') + body;
+    stepperHtml(step, job) + (job.message ? `<div class="callout warn" style="margin-bottom:16px">${esc(job.message)}</div>` : '') + locked + body;
   if (keepScroll) window.scrollTo(0, y);
   const live = job.running || job.status === 'Scanning' || job.status === 'Processing';
   clearInterval(S.poll); S.poll = null;
@@ -346,7 +350,7 @@ function jobScan(job) {
   </div></div>`;
 }
 
-function canExclude(job) { return canOperate() && !job.running && ['Awaiting approval', 'Paused', 'Completed', 'Completed with exceptions'].includes(job.status); }
+function canExclude(job) { return canOperate() && !job.running && !(job.submittedBy && job.status === 'Awaiting approval') && ['Awaiting approval', 'Paused', 'Completed', 'Completed with exceptions'].includes(job.status); }
 function itemsState() { if (!S.sel) S.sel = new Set(); return S.items; }
 function resetItems(status) { S.items = { status: status || 'EXCEPTIONS', q: '', page: 1, group: '' }; S.sel = new Set(); }
 
@@ -362,7 +366,7 @@ async function itemsPanel(job, opts) {
   const c = job.counts;
   const tabs = [['EXCEPTIONS', 'All exceptions'], ...opts.tabs.map(s => [s, LABEL[s]]), ['EXCLUDED', 'Excluded'], ['ALL', 'Everything']];
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
-  const canResolve = canOperate() && job.status === 'Awaiting approval';
+  const canResolve = canOperate() && job.status === 'Awaiting approval' && !job.submittedBy;
   const bulk = canExclude(job) && (exceptionView || showingExcluded);
   const selectable = it => showingExcluded ? it.status === 'EXCLUDED' : EXCLUDABLE.includes(it.status);
   const pageIds = data.items.filter(selectable).map(it => it.id);
@@ -407,6 +411,7 @@ async function itemsPanel(job, opts) {
 /** Exclude (with a required note) or restore: ticked rows, everything in the view, or one reason. */
 function openBulk(kind, target) {
   const restore = kind === 'restore';
+  const asRequest = S.job.makerChecker && S.job.status !== 'Awaiting approval';
   S.bulk = { kind, target };
   const what = target.ids ? `${fmt(target.ids.length)} selected item${target.ids.length === 1 ? '' : 's'}`
     : `all ${fmt(target.count)} item${target.count === 1 ? '' : 's'} in ${target.group ? `reason “${esc(target.group)}”` : 'this view'}${target.status && target.status !== 'EXCEPTIONS' && target.status !== 'EXCLUDED' ? ` (${esc(LABEL[target.status])})` : ''}${target.q ? ` matching “${esc(target.q)}”` : ''}`;
@@ -414,8 +419,9 @@ function openBulk(kind, target) {
     <h2>${restore ? 'Restore' : 'Exclude'} ${what}?</h2>
     <div class="small muted">${restore ? 'The items go back to the status they had before they were excluded. Recorded in the audit log.'
       : 'Excluded items are not copied and no longer count as exceptions. They stay in both reports with status EXCLUDED, their original status and reason, your name, the time and this note. A new scan excludes the same items again while their status is the same. You can restore them at any time before the job is deleted.'}</div>
-    ${restore ? '' : '<div class="field"><label for="xnote">Why are these excluded? (required)</label><input class="input" id="xnote" maxlength="500" placeholder="e.g. Blank file names confirmed by client HR, not needed"></div>'}
-    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn ${restore ? 'primary' : 'danger'}" data-action="confirm-bulk">${restore ? 'Restore' : 'Exclude'}</button></div></div></div>`;
+    ${asRequest ? '<div class="callout"><div><b>Maker-checker is on.</b> This sends a change request. Nothing changes until a different person approves it under <b>Change requests</b>.</div></div>' : ''}
+    ${restore ? (asRequest ? '<div class="field"><label for="xnote">Why restore them? (optional)</label><input class="input" id="xnote" maxlength="500"></div>' : '') : '<div class="field"><label for="xnote">Why are these excluded? (required)</label><input class="input" id="xnote" maxlength="500" placeholder="e.g. Blank file names confirmed by client HR, not needed"></div>'}
+    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn ${restore ? 'primary' : 'danger'}" data-action="confirm-bulk">${asRequest ? 'Send request' : restore ? 'Restore' : 'Exclude'}</button></div></div></div>`;
   const n = $('#xnote'); if (n) n.focus();
 }
 
@@ -438,10 +444,48 @@ async function jobReview(job) {
       <div class="panel" style="align-self:start"><div class="panel-h"><h2>Approval</h2><span class="small muted">required before any copy</span></div><div class="panel-b">
         <div class="eq">Operation <b>COPY</b> · Duplicates <b>${esc(job.config.duplicateRule)}</b>${job.config.ambiguousRule === 'KeepAll' ? ' · Several records <b>Keep all</b>' : ''}<br>Year <b>${esc(job.config.yearRule)}</b> · Integrity <b>${esc(job.config.integrity)}</b><br>Destination <b>${esc(job.destinationText)}</b></div>
         <div class="row-between"><a class="btn" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=xlsx">Download validation report</a><a class="btn sm" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=csv">CSV</a></div>
-        ${canOperate() ? `<label class="check"><input type="checkbox" id="ack"><span>I have reviewed the preview and exceptions. Copy <b class="num">${fmt(c.READY)}</b> ready files. Exceptions stay in the report and are not copied.</span></label>
-        <div><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button></div>` : '<div class="small muted">Viewers cannot approve processing.</div>'}
+        ${approvalBlock(job)}
       </div></div>
     </div>`;
+}
+
+/** Approval panel: direct approval, or maker-checker (submit → a different person approves or rejects). */
+function approvalBlock(job) {
+  const c = job.counts;
+  if (!canOperate()) return '<div class="small muted">Viewers cannot approve processing.</div>';
+  const ack = `<label class="check"><input type="checkbox" id="ack"><span>I have reviewed the preview and exceptions. Copy <b class="num">${fmt(c.READY)}</b> ready files. Exceptions stay in the report and are not copied.</span></label>`;
+  if (!job.makerChecker) return `${ack}<div><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button></div>`;
+  const people = (job.makers || []).map(esc).join(', ') || '—';
+  if (!job.submittedBy) return `<div class="callout"><div><b>Maker-checker is on.</b> Submit the job; a different operator or administrator then approves or rejects it. People who worked on this job cannot approve it: ${people}.</div></div>
+    <div class="field"><label for="subnote">Note for the approver (optional)</label><input class="input" id="subnote" maxlength="500" placeholder="e.g. 3,230 blank file names excluded as agreed with client HR"></div>
+    ${ack.replace('Copy <b', 'Ask to copy <b')}<div><button class="btn primary" data-action="submit" ${c.READY ? '' : 'disabled'}>Submit for approval</button></div>`;
+  if (isMakerOf(job)) return `<div class="small muted">You worked on this job, so a different person must approve or reject it. People who worked on it: ${people}.</div>`;
+  return `<div class="small">Prepared by <b>${people}</b>. Submitted by <b>${esc(job.submittedBy)}</b>${job.submitNote ? `: “${esc(job.submitNote)}”` : ''}. Review the exceptions and the report, then approve or reject.</div>
+    ${ack}<div style="display:flex;gap:8px"><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button><button class="btn danger" data-action="reject">Reject…</button></div>`;
+}
+
+/** Change requests (maker-checker, after approval): exclusions and restores waiting for a second person. */
+async function requestsPanel(job) {
+  if (!job.makerChecker && !job.pendingRequests) return '';
+  const reqs = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/requests`);
+  if (!reqs.length) return '';
+  const row = q => `<tr><td class="num">${q.id}</td><td>${esc(q.summary || '')}<div class="small muted">${q.note ? '“' + esc(q.note) + '”' : ''}</div></td><td class="num">${fmt(q.count)}</td>
+    <td class="small">${esc(q.requestedBy)}<div class="muted">${when(q.requestedAt)}</div></td>
+    <td class="small">${q.status === 'Pending' ? '<span class="pill j-Awaiting">Pending</span>' : `${esc(q.status)} by ${esc(q.decidedBy || '')}<div class="muted">${esc(q.decisionNote || '')}</div>`}</td>
+    <td style="text-align:right;white-space:nowrap">${q.status !== 'Pending' || !canOperate() ? '' : isMe(q.requestedBy) ? `<button class="btn sm" data-action="req-withdraw" data-id="${q.id}">Withdraw</button>`
+      : `<button class="btn sm primary" data-action="req-approve" data-id="${q.id}">Approve</button> <button class="btn sm danger" data-action="req-reject" data-id="${q.id}">Reject…</button>`}</td></tr>`;
+  return `<div class="panel" style="margin-top:16px"><div class="panel-h"><h2>Change requests</h2><span class="small muted">maker-checker: a different person approves each request</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>#</th><th>Change</th><th>Items</th><th>Requested by</th><th>Status</th><th></th></tr></thead><tbody>${reqs.slice(0, 20).map(row).join('')}</tbody></table></div></div>`;
+}
+
+function openReason(kind, id) {
+  S.reason = { kind, id };
+  $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="Reject">
+    <h2>${kind === 'job' ? 'Reject this job?' : `Reject request ${id}?`}</h2>
+    <div class="small muted">${kind === 'job' ? 'The job goes back to the maker unchanged, with your reason shown on it. Nothing is copied.' : 'Nothing changes; the requester sees your reason.'}</div>
+    <div class="field"><label for="rjreason">Reason (required)</label><input class="input" id="rjreason" maxlength="500" placeholder="e.g. Exclude only the blank file names, not the unmapped files"></div>
+    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn danger" data-action="confirm-reject">Reject</button></div></div></div>`;
+  $('#rjreason').focus();
 }
 
 function buildTree(t) {
@@ -498,6 +542,7 @@ async function jobRecon(job) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">${canOperate() && c.FAILED ? `<button class="btn" data-action="retry">Retry ${fmt(c.FAILED)} failed</button>` : ''}
         <a class="btn" href="${base}&format=csv">Reconciliation CSV</a><a class="btn primary" href="${base}&format=xlsx">Reconciliation Excel</a></div>
     </div></div>
+    ${await requestsPanel(job)}
     <div style="margin-top:16px">${await itemsPanel(job, { title: 'Results', tabs: ['PROCESSED', 'FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID'] })}</div>
     <div class="foot"><a class="btn" href="#/audit">View audit log</a><a class="btn" href="#/dashboard">Back to dashboard</a></div>`;
 }
@@ -562,6 +607,7 @@ async function vSettings() {
       <div class="panel"><div class="panel-h"><h2>Processing permissions</h2></div><div class="panel-b" style="gap:0">
         <div class="toggle"><div><b>Operation</b><div class="small muted">COPY only. Move and delete are not available in this version.</div></div><span class="pill s-READY">COPY</span></div>
         ${sw('allowOverwrite', 'Allow overwrite on duplicate', 'Lets operators choose Overwrite when the destination file exists.')}
+        ${sw('requireSecondApprover', 'Maker-checker (second approver)', 'The person who prepares a job cannot approve it. They submit it, and a different operator or administrator approves or rejects it. Exclusions and restores after approval also need a second person.')}
         ${num('maxParallelCopies', 'Parallel copies', 'Files copied at the same time (1–64). Lower it if storage throttles.', 1, 64)}
       </div></div>
       <div class="panel"><div class="panel-h"><h2>Retention and security</h2></div><div class="panel-b" style="gap:0">
@@ -716,6 +762,21 @@ document.addEventListener('click', e => {
       $('#layer').innerHTML = ''; S.resolve = null; toast(r.message); await loadJob(true);
     }, el),
     'approve': () => { if (!$('#ack').checked) return toast('Tick the confirmation box first.', true); openApprove(); },
+    'submit': () => guard(async () => {
+      if (!$('#ack').checked) throw new Error('Tick the confirmation box first.');
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/submit`, { note: $('#subnote').value });
+      toast(r.message); await loadJob(true);
+    }, el),
+    'withdraw': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/withdraw`); toast(r.message); await loadJob(true); }, el),
+    'reject': () => openReason('job'),
+    'req-reject': () => openReason('req', +el.dataset.id),
+    'confirm-reject': () => guard(async () => {
+      const { kind, id } = S.reason, note = $('#rjreason').value;
+      const r = await api('POST', kind === 'job' ? `/api/jobs/${encodeURIComponent(S.job.id)}/reject` : `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${id}/reject`, { note });
+      $('#layer').innerHTML = ''; S.reason = null; toast(r.message); await loadJob(true);
+    }, el),
+    'req-approve': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/approve`); toast(r.message); await loadJob(true); }, el),
+    'req-withdraw': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/reject`, { note: '' }); toast(r.message); await loadJob(true); }, el),
     'confirm-approve': () => guard(async () => {
       await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true });
       $('#layer').innerHTML = ''; resetItems(); await loadJob(); window.scrollTo(0, 0);

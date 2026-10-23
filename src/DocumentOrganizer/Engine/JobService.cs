@@ -175,6 +175,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
             var id = j.Str("id")!;
             app.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id));
             app.Db.Execute("DELETE FROM jobs WHERE id=@j", ("j", id));
+            app.Db.Execute("DELETE FROM exclusions WHERE job_id=@j", ("j", id));
+            app.Db.Execute("DELETE FROM change_requests WHERE job_id=@j", ("j", id));
             try { Directory.Delete(Path.Combine(dataPath, "jobs", id), true); } catch { }
             app.Audit("System", null, "Job purged (retention)", id, $"Older than {s.JobRetentionDays} days.");
         }

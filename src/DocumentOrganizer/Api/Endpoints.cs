@@ -161,6 +161,7 @@ public static class Endpoints
                 ("id", id), ("n", string.IsNullOrWhiteSpace(body.Name) ? id : body.Name!.Trim()),
                 ("src", AppDb.ToJson(body.Source)), ("dst", AppDb.ToJson(body.Destination)), ("cfg", AppDb.ToJson(new JobConfig())),
                 ("st", JobStatus.Draft), ("by", u), ("at", DateTime.UtcNow.ToString("o")));
+            FourEyes.TouchMaker(db, id, u);
             db.Audit(u, r, "Job created", id, $"Source {body.Source.Describe()} · Destination {body.Destination.Describe()}", Ip(ctx));
             db.Audit(u, r, "Source connected", id, srcMsg + " " + dstMsg, Ip(ctx));
             return Results.Ok(new { id, sourceCheck = srcMsg, destinationCheck = dstMsg });
@@ -178,6 +179,7 @@ public static class Endpoints
             db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id));
             db.Db.Execute("DELETE FROM jobs WHERE id=@j", ("j", id));
             db.Db.Execute("DELETE FROM exclusions WHERE job_id=@j", ("j", id));
+            db.Db.Execute("DELETE FROM change_requests WHERE job_id=@j", ("j", id));
             try { Directory.Delete(Path.Combine(opt.DataPath, "jobs", id), true); } catch { }
             db.Audit(u, r, "Job deleted", id, null, Ip(ctx));
             return Results.Ok();
@@ -264,6 +266,7 @@ public static class Endpoints
             bool wasScanned = j.Str("status") != JobStatus.Draft;
             db.UpdateJob(id, ("config_json", AppDb.ToJson(cfg)), ("status", JobStatus.Draft), ("message", wasScanned ? "Configuration changed. Run the scan again." : null));
             if (wasScanned) { db.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id)); db.UpdateJob(id, ("counts_json", null), ("discovered", 0)); }
+            FourEyes.TouchMaker(db, id, u);
             db.Audit(u, r, "Configuration saved", id,
                 $"Year rule: {cfg.YearRule}{(cfg.YearRule is "FileNamePattern" or "PathPattern" ? " " + cfg.YearPattern : "")} · Year mandatory: {cfg.YearMandatory} · Template: {cfg.Template} · Several records: {(cfg.AmbiguousRule == "KeepAll" ? "keep all" : "flag as ambiguous")} · Duplicates: {cfg.DuplicateRule} · Integrity: {cfg.Integrity} · Batch: {cfg.BatchSize}", Ip(ctx));
             return Results.Ok(new { ok = true });
@@ -278,6 +281,7 @@ public static class Endpoints
             var cfg = AppDb.Cfg(j.Str("config_json"));
             var errors = ValidateMappings(cfg, maps);
             if (errors.Count > 0) throw new ApiError(string.Join(" ", errors));
+            FourEyes.TouchMaker(db, id, u);
             js.StartScan(id, u, r);
             return Results.Ok(new { started = true });
         }).RequireAuthorization("Operate");
@@ -323,9 +327,12 @@ public static class Endpoints
             var note = (body.Note ?? "").Trim();
             if (note.Length < 3) throw new ApiError("Enter a note saying why these items are excluded (it is kept in the reports and audit log).");
             if (note.Length > 500) note = note[..500];
+            if (FourEyes.IsSubmitted(j)) throw new ApiError(FourEyes.LockedMessage(j));
             var (ids, filter) = BulkTarget(body);
+            if (NeedsRequest(db, j)) return Results.Ok(CreateRequest(db, ex, id, "exclude", ids, filter, note, u, r, Ip(ctx)));
             var (n, by) = ex.Exclude(id, ids, filter, note, u);
             if (n == 0) throw new ApiError("None of the chosen items can be excluded (only exceptions can).");
+            FourEyes.TouchMaker(db, id, u);
             db.Audit(u, r, "Exceptions excluded", id, $"{n:N0} items ({Describe(by)}){DescribeFilter(filter)} · Note: {note}", Ip(ctx));
             return Results.Ok(new { count = n, byStatus = by, message = $"{n:N0} item{(n == 1 ? "" : "s")} excluded." });
         }).RequireAuthorization("Operate");
@@ -335,9 +342,12 @@ public static class Endpoints
             var (u, r) = Who(ctx);
             var j = Need(db, id);
             if (Exclusions.CannotChange(j, js.IsRunning(id)) is string why) throw new ApiError(why);
+            if (FourEyes.IsSubmitted(j)) throw new ApiError(FourEyes.LockedMessage(j));
             var (ids, filter) = BulkTarget(body, restore: true);
+            if (NeedsRequest(db, j)) return Results.Ok(CreateRequest(db, ex, id, "restore", ids, filter, (body.Note ?? "").Trim(), u, r, Ip(ctx)));
             var (n, by) = ex.Restore(id, ids, filter);
             if (n == 0) throw new ApiError("None of the chosen items are excluded.");
+            FourEyes.TouchMaker(db, id, u);
             db.Audit(u, r, "Exclusions restored", id, $"{n:N0} items back to {Describe(by)}{DescribeFilter(filter)}", Ip(ctx));
             return Results.Ok(new { count = n, byStatus = by, message = $"{n:N0} item{(n == 1 ? "" : "s")} restored." });
         }).RequireAuthorization("Operate");
@@ -363,8 +373,10 @@ public static class Endpoints
             var (u, r) = Who(ctx);
             var j = Need(db, id);
             if (j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("Ambiguous files can be resolved while the job is awaiting approval.");
+            if (FourEyes.IsSubmitted(j)) throw new ApiError(FourEyes.LockedMessage(j));
             var (ok, msg) = js.Resolve(id, itemId, body.RecordId ?? "", body.Note, u, r, body.MappingFile);
             if (!ok) throw new ApiError(msg);
+            FourEyes.TouchMaker(db, id, u);
             return Results.Ok(new { message = msg });
         }).RequireAuthorization("Operate");
 
@@ -373,13 +385,103 @@ public static class Endpoints
             var (u, r) = Who(ctx);
             var j = Need(db, id);
             if (j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("Only a validated job awaiting approval can be approved.");
+            if (js.IsRunning(id)) throw new ApiError("The job is running.");
             if (!body.Acknowledge) throw new ApiError("Confirm that you have reviewed the preview and exceptions.");
             var c = db.CountByStatus(id);
             if (c[ItemStatus.Ready] == 0) throw new ApiError("There are no files ready for processing.");
+            bool fourEyes = db.LoadSettings().RequireSecondApprover;
+            if (fourEyes)
+            {
+                if (!FourEyes.IsSubmitted(j)) throw new ApiError("Maker-checker is on: submit the job for approval first. A different person then approves it.");
+                if (FourEyes.CheckerProblem(j, u) is string why) throw new ApiError(why, 403);
+            }
             db.UpdateJob(id, ("approved_by", u), ("approved_at", DateTime.UtcNow.ToString("o")));
-            db.Audit(u, r, "Processing approved", id, $"{c[ItemStatus.Ready]:N0} files · COPY", Ip(ctx));
+            db.Audit(u, r, "Processing approved", id, $"{c[ItemStatus.Ready]:N0} files · COPY" +
+                (fourEyes ? $" · checker {u}; submitted by {j.Str("submitted_by")}; prepared by {string.Join(", ", FourEyes.Makers(j))}" : ""), Ip(ctx));
             js.StartProcessing(id, u, r, "Processing started");
             return Results.Ok(new { started = true });
+        }).RequireAuthorization("Operate");
+
+        // Maker-checker: submit a scanned job for approval, withdraw it, or (checker) reject it
+        api.MapPost("/jobs/{id}/submit", (HttpContext ctx, string id, NoteBody body, AppDb db, JobService js) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            if (!db.LoadSettings().RequireSecondApprover) throw new ApiError("Maker-checker is off: the job can be approved directly.");
+            if (j.Str("status") != JobStatus.AwaitingApproval || js.IsRunning(id)) throw new ApiError("Only a scanned job awaiting approval can be submitted.");
+            if (FourEyes.IsSubmitted(j)) throw new ApiError($"Already submitted by {j.Str("submitted_by")}.");
+            if (db.CountByStatus(id)[ItemStatus.Ready] == 0) throw new ApiError("There are no files ready for processing.");
+            FourEyes.TouchMaker(db, id, u);
+            var note = (body.Note ?? "").Trim();
+            db.UpdateJob(id, ("submitted_by", u), ("submitted_at", DateTime.UtcNow.ToString("o")), ("submit_note", note.Length > 500 ? note[..500] : note), ("message", null));
+            db.Audit(u, r, "Submitted for approval", id, string.IsNullOrEmpty(note) ? null : "Note: " + note, Ip(ctx));
+            return Results.Ok(new { message = "Submitted. A different person must now approve or reject it." });
+        }).RequireAuthorization("Operate");
+
+        api.MapPost("/jobs/{id}/withdraw", (HttpContext ctx, string id, AppDb db) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            if (!FourEyes.IsSubmitted(j) || j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("The job is not waiting for approval.");
+            if (!string.Equals(j.Str("submitted_by"), u, StringComparison.OrdinalIgnoreCase) && r != Roles.Administrator)
+                throw new ApiError("Only the person who submitted it, or an administrator, can withdraw it.", 403);
+            db.UpdateJob(id, ("submitted_by", null), ("submitted_at", null), ("submit_note", null));
+            db.Audit(u, r, "Submission withdrawn", id, null, Ip(ctx));
+            return Results.Ok(new { message = "Withdrawn. The job can be changed again." });
+        }).RequireAuthorization("Operate");
+
+        api.MapPost("/jobs/{id}/reject", (HttpContext ctx, string id, NoteBody body, AppDb db) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            if (!FourEyes.IsSubmitted(j) || j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("The job is not waiting for approval.");
+            if (FourEyes.CheckerProblem(j, u) is string why) throw new ApiError(why, 403);
+            var reason = (body.Note ?? "").Trim();
+            if (reason.Length < 3) throw new ApiError("Enter the reason for rejecting, so the maker knows what to change.");
+            if (reason.Length > 500) reason = reason[..500];
+            db.UpdateJob(id, ("submitted_by", null), ("submitted_at", null), ("submit_note", null), ("message", $"Rejected by {u}: {reason}"));
+            db.Audit(u, r, "Approval rejected", id, $"Submitted by {j.Str("submitted_by")} · Reason: {reason}", Ip(ctx));
+            return Results.Ok(new { message = "Rejected. The maker sees your reason on the job." });
+        }).RequireAuthorization("Operate");
+
+        // Change requests: after approval, with maker-checker on, excluding or restoring items needs a second person
+        api.MapGet("/jobs/{id}/requests", (string id, AppDb db) =>
+        {
+            Need(db, id);
+            return Results.Ok(db.Db.Query("SELECT * FROM change_requests WHERE job_id=@j ORDER BY id DESC LIMIT 200", ("j", id)).Select(RequestDto));
+        }).RequireAuthorization("View");
+
+        api.MapPost("/jobs/{id}/requests/{rid:long}/approve", (HttpContext ctx, string id, long rid, AppDb db, JobService js, Exclusions ex) =>
+        {
+            var (u, r) = Who(ctx);
+            var j = Need(db, id);
+            var req = PendingRequest(db, id, rid);
+            if (string.Equals(req.Str("requested_by"), u, StringComparison.OrdinalIgnoreCase))
+                throw new ApiError("You made this request, so a different person must approve it.", 403);
+            if (Exclusions.CannotChange(j, js.IsRunning(id)) is string why) throw new ApiError(why);
+            var ids = JsonSerializer.Deserialize<long[]>(req.Str("item_ids_json")!) ?? Array.Empty<long>();
+            var by = req.Str("requested_by")!;
+            var note = $"{req.Str("note")} (approved by {u})";
+            var (n, stat) = req.Str("kind") == "exclude" ? ex.Exclude(id, ids, null, note, by) : ex.Restore(id, ids, null);
+            db.Db.Execute("UPDATE change_requests SET status='Approved', decided_by=@u, decided_at=@t, decision_note=@n WHERE id=@id",
+                ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("n", $"{n:N0} items changed"), ("id", rid));
+            db.Audit(u, r, req.Str("kind") == "exclude" ? "Exclusion request approved" : "Restore request approved", id,
+                $"Request {rid} by {by}: {n:N0} items ({Describe(stat)}) · Note: {req.Str("note")}", Ip(ctx));
+            return Results.Ok(new { count = n, message = $"Approved. {n:N0} item{(n == 1 ? "" : "s")} {(req.Str("kind") == "exclude" ? "excluded" : "restored")}." });
+        }).RequireAuthorization("Operate");
+
+        api.MapPost("/jobs/{id}/requests/{rid:long}/reject", (HttpContext ctx, string id, long rid, NoteBody body, AppDb db) =>
+        {
+            var (u, r) = Who(ctx);
+            Need(db, id);
+            var req = PendingRequest(db, id, rid);
+            bool own = string.Equals(req.Str("requested_by"), u, StringComparison.OrdinalIgnoreCase);
+            var reason = (body.Note ?? "").Trim();
+            if (!own && reason.Length < 3) throw new ApiError("Enter the reason for rejecting.");
+            db.Db.Execute("UPDATE change_requests SET status=@s, decided_by=@u, decided_at=@t, decision_note=@n WHERE id=@id",
+                ("s", own ? "Withdrawn" : "Rejected"), ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("n", own ? "Withdrawn by the requester" : reason), ("id", rid));
+            db.Audit(u, r, own ? "Change request withdrawn" : "Change request rejected", id, $"Request {rid} by {req.Str("requested_by")}{(own ? "" : " · Reason: " + reason)}", Ip(ctx));
+            return Results.Ok(new { message = own ? "Request withdrawn." : "Request rejected." });
         }).RequireAuthorization("Operate");
 
         api.MapPost("/jobs/{id}/pause", (HttpContext ctx, string id, AppDb db, JobService js) =>
@@ -507,6 +609,7 @@ public static class Endpoints
     private static void EnsureEditable(Row j, JobService js)
     {
         if (js.IsRunning(j.Str("id")!)) throw new ApiError("The job is running.");
+        if (FourEyes.IsSubmitted(j)) throw new ApiError(FourEyes.LockedMessage(j));
         if (j.Str("status") is not (JobStatus.Draft or JobStatus.AwaitingApproval))
             throw new ApiError("This job has already been approved. Create a new job to change its mapping or rules.");
     }
@@ -582,6 +685,7 @@ public static class Endpoints
     private static object ApplyMappings(AppDb db, Row j, List<MappingSource> list, List<MappingSource> added, string user, string role, string? ip, string evt, string? removedName = null)
     {
         var id = j.Str("id")!;
+        FourEyes.TouchMaker(db, id, user);
         var cfg = AppDb.Cfg(j.Str("config_json"));
         cfg.FileColumns ??= new();
         foreach (var k in cfg.FileColumns.Keys.Where(k => list.All(m => m.Id != k)).ToList()) cfg.FileColumns.Remove(k);
@@ -633,7 +737,7 @@ public static class Endpoints
         id = j.Str("id"), name = j.Str("name"), status = j.Str("status"),
         source = AppDb.Loc(j.Str("source_json")).Describe(), destination = AppDb.Loc(j.Str("dest_json")).Describe(),
         volume = j.Long("discovered"), createdBy = j.Str("created_by"), createdAt = j.Str("created_at"),
-        startedAt = j.Str("started_at"), endedAt = j.Str("ended_at"),
+        startedAt = j.Str("started_at"), endedAt = j.Str("ended_at"), submittedBy = j.Str("submitted_by"),
         counts = j.Str("counts_json") is string cj ? JsonSerializer.Deserialize<Dictionary<string, long>>(cj) : null
     };
 
@@ -689,6 +793,9 @@ public static class Endpoints
             progress, scan,
             copyResult = new { processed = run.GetValueOrDefault(ItemStatus.Processed), skipped = run.GetValueOrDefault(ItemStatus.Duplicate), failed = run.GetValueOrDefault(ItemStatus.Failed) },
             running = js.IsRunning(id), discovered = j.Long("discovered"),
+            makerChecker = db.LoadSettings().RequireSecondApprover, makers = FourEyes.Makers(j),
+            submittedBy = j.Str("submitted_by"), submittedAt = j.Str("submitted_at"), submitNote = j.Str("submit_note"),
+            pendingRequests = Convert.ToInt64(db.Db.Scalar("SELECT COUNT(*) FROM change_requests WHERE job_id=@j AND status='Pending'", ("j", id)) ?? 0L),
             counts = db.CountByStatus(id)
         };
     }
@@ -699,6 +806,37 @@ public static class Endpoints
     public sealed record CreateJobBody(string? Name, Location? Source, Location? Destination);
     /// <summary>The application version (from the project file), shown in the side bar so people can see which build is running.</summary>
     public static readonly string AppVersion = typeof(Endpoints).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
+
+    public sealed record NoteBody(string? Note);
+
+    /// <summary>With maker-checker on, a job that has been approved (copying, paused or finished) is changed only through a request.</summary>
+    private static bool NeedsRequest(AppDb db, Row j) => db.LoadSettings().RequireSecondApprover && j.Str("status") != JobStatus.AwaitingApproval;
+
+    private static object CreateRequest(AppDb db, Exclusions ex, string jobId, string kind, long[]? ids, Exclusions.Filter? filter, string note, string user, string role, string? ip)
+    {
+        var (sel, by) = ex.Preview(jobId, ids, filter, kind == "restore");
+        if (sel.Length == 0) throw new ApiError(kind == "exclude" ? "None of the chosen items can be excluded (only exceptions can)." : "None of the chosen items are excluded.");
+        if (note.Length > 500) note = note[..500];
+        var summary = (kind == "exclude" ? "Exclude " : "Restore ") + Describe(by) + DescribeFilter(filter);
+        var rid = db.Db.Insert(@"INSERT INTO change_requests(job_id,kind,item_ids_json,item_count,summary,note,requested_by,requested_at) VALUES(@j,@k,@ids,@n,@s,@note,@u,@t)",
+            ("j", jobId), ("k", kind), ("ids", JsonSerializer.Serialize(sel)), ("n", sel.Length), ("s", summary), ("note", note), ("u", user), ("t", DateTime.UtcNow.ToString("o")));
+        db.Audit(user, role, kind == "exclude" ? "Exclusion requested" : "Restore requested", jobId, $"Request {rid}: {sel.Length:N0} items ({Describe(by)}) · Note: {note}", ip);
+        return new { pending = true, requestId = rid, count = sel.Length, message = $"Request sent: {sel.Length:N0} item{(sel.Length == 1 ? "" : "s")} will be {(kind == "exclude" ? "excluded" : "restored")} when a different person approves it." };
+    }
+
+    private static Row PendingRequest(AppDb db, string jobId, long rid)
+    {
+        var req = db.Db.QueryOne("SELECT * FROM change_requests WHERE id=@id AND job_id=@j", ("id", rid), ("j", jobId)) ?? throw new ApiError("Request not found.", 404);
+        if (req.Str("status") != "Pending") throw new ApiError($"This request is already {req.Str("status")!.ToLowerInvariant()}.");
+        return req;
+    }
+
+    private static object RequestDto(Row r) => new
+    {
+        id = r.Long("id"), kind = r.Str("kind"), count = r.Long("item_count"), summary = r.Str("summary"), note = r.Str("note"),
+        requestedBy = r.Str("requested_by"), requestedAt = r.Str("requested_at"), status = r.Str("status"),
+        decidedBy = r.Str("decided_by"), decidedAt = r.Str("decided_at"), decisionNote = r.Str("decision_note")
+    };
 
     public sealed record BulkBody(long[]? Ids, string? Status, string? Q, string? Group, string? Note, bool? AllInView);
 

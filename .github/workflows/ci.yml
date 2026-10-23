@@ -46,6 +46,8 @@ jobs:
           node tests/e2e-mapping.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
           node tests/e2e-scenarios.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
           node tests/e2e-exclusions.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
+          node tests/e2e-makerchecker.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
+          node tests/e2e-live.mjs http://localhost:5080 'Ci-Test-Pass-2026!'
 
       - name: App log
         if: always()

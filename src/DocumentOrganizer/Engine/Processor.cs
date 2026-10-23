@@ -112,6 +112,8 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
         try
         {
             bool overwrite = false;
+            // Copying this file was interrupted before (restart or crash): remove any half-written copy first
+            if (item.Str("started_at") != null && dst is LocalStore lsd) lsd.DeletePartials(destKey);
             var existing = await dst.GetPropsAsync(destKey, ct);
             if (existing != null && item.Str("started_at") != null)
             {

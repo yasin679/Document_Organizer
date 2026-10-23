@@ -22,6 +22,10 @@ public sealed class Reports(AppDb app)
         "Excluded From Status", "Excluded By", "Excluded At (UTC)", "Exclusion Note"
     };
 
+    /// <summary>Data rows per sheet (Excel's limit is 1,048,576 rows including the header). DOCORG_XLSX_MAX_ROWS lowers it for tests.</summary>
+    public static readonly int MaxRowsPerSheet =
+        int.TryParse(Environment.GetEnvironmentVariable("DOCORG_XLSX_MAX_ROWS"), out var n) && n > 0 ? Math.Min(n, 1_048_575) : 1_048_575;
+
     public async Task WriteAsync(string jobId, string kind, string format, Stream output)
     {
         var job = app.GetJob(jobId) ?? throw new InvalidOperationException("Job not found.");
@@ -95,12 +99,22 @@ public sealed class Reports(AppDb app)
             x.WriteRow(new[] { "File matching several records", cfg.AmbiguousRule == "KeepAll" ? "Keep all: one copy per record" : "Flag as AMBIGUOUS" });
             x.WriteRow(new[] { "Duplicate rule", cfg.DuplicateRule });
             x.WriteRow(new[] { "Integrity check", cfg.Integrity });
+            var makers = FourEyes.Makers(job);
+            if (makers.Count > 0) x.WriteRow(new[] { "Prepared by", string.Join(", ", makers) });
+            if (job.Str("submitted_by") is string sb) x.WriteRow(new[] { "Submitted for approval by", $"{sb} at {job.Str("submitted_at")}" });
             x.WriteRow(new[] { "Approved by", job.Str("approved_by") is string ab ? $"{ab} at {job.Str("approved_at")}" : "Not yet approved" });
             x.WriteRow(new[] { "Files discovered in source", job.Str("discovered") });
             foreach (var s in ItemStatus.All) x.WriteRow(new[] { "Items " + s, counts[s].ToString() });
             x.WriteRow(new[] { "Generated (UTC)", DateTime.UtcNow.ToString("u") });
-            x.BeginSheet(recon ? "Reconciliation" : "Validation", headers);
-            foreach (var r in rows) x.WriteRow(r);
+            // An Excel sheet holds 1,048,576 rows: very large jobs continue on further sheets ("Reconciliation 2", ...).
+            var name = recon ? "Reconciliation" : "Validation";
+            int sheet = 1, inSheet = 0;
+            x.BeginSheet(name, headers);
+            foreach (var r in rows)
+            {
+                if (inSheet == MaxRowsPerSheet) { sheet++; inSheet = 0; x.BeginSheet($"{name} {sheet}", headers); }
+                x.WriteRow(r); inSheet++;
+            }
         }
     }
 }

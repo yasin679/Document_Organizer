@@ -51,6 +51,15 @@ public sealed class AppDb
         AddColumnIfMissing("items", "excluded_by", "TEXT");
         AddColumnIfMissing("items", "excluded_at", "TEXT");
         AddColumnIfMissing("items", "exclusion_note", "TEXT");
+        // Maker-checker: who worked on the job, who submitted it for approval, and change requests after approval
+        AddColumnIfMissing("jobs", "makers_json", "TEXT");
+        AddColumnIfMissing("jobs", "submitted_by", "TEXT");
+        AddColumnIfMissing("jobs", "submitted_at", "TEXT");
+        AddColumnIfMissing("jobs", "submit_note", "TEXT");
+        Db.Execute(@"CREATE TABLE IF NOT EXISTS change_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, kind TEXT NOT NULL,
+            item_ids_json TEXT NOT NULL, item_count INTEGER NOT NULL, summary TEXT, note TEXT, requested_by TEXT NOT NULL, requested_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Pending', decided_by TEXT, decided_at TEXT, decision_note TEXT)");
+        Db.Execute("CREATE INDEX IF NOT EXISTS ix_change_requests_job ON change_requests(job_id, status)");
         // Exclusions are remembered per job, so a new scan sets the same items aside again (same file or record, same status)
         Db.Execute(@"CREATE TABLE IF NOT EXISTS exclusions(job_id TEXT NOT NULL, item_key TEXT NOT NULL, from_status TEXT NOT NULL,
             note TEXT, by_user TEXT, at TEXT, PRIMARY KEY(job_id, item_key))");
@@ -163,4 +172,6 @@ public sealed class AppSettings
     public bool LocalSourceEnabled { get; set; } = true;
     public bool AzureBlobEnabled { get; set; } = true;
     public bool S3Enabled { get; set; } = true;
+    /// <summary>Maker-checker: a person who did not prepare a job must approve it (and approve later exclusions).</summary>
+    public bool RequireSecondApprover { get; set; } = false;
 }

@@ -138,6 +138,13 @@ public sealed class Exclusions(AppDb app)
 
     private sealed record Sel(long Id, string Status, string? From, string Key);
 
+    /// <summary>The items an exclude (or restore) would change right now: their IDs and count per status. Used for change requests.</summary>
+    public (long[] Ids, Dictionary<string, int> ByStatus) Preview(string jobId, IReadOnlyCollection<long>? ids, Filter? filter, bool restore)
+    {
+        var rows = Select(jobId, ids, filter, restore ? new[] { ItemStatus.Excluded } : ItemStatus.Excludable);
+        return (rows.Select(r => r.Id).ToArray(), rows.GroupBy(r => restore ? r.From ?? "" : r.Status).ToDictionary(g => g.Key, g => g.Count()));
+    }
+
     private List<Sel> Select(string jobId, IReadOnlyCollection<long>? ids, Filter? filter, string[] allowed)
     {
         var inList = string.Join(",", allowed.Select(s => $"'{s}'"));

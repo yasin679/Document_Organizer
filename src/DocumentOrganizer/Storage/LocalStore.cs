@@ -63,6 +63,23 @@ public sealed class LocalStore : IDocumentStore
         finally { if (File.Exists(tmp)) File.Delete(tmp); }
     }
 
+    /// <summary>
+    /// Removes half-written copies (".partial-xxxxxxxx") of this destination file, and of its "_dupN" variants,
+    /// left behind when the application stopped in the middle of copying it.
+    /// </summary>
+    public int DeletePartials(string key)
+    {
+        var full = Full(key);
+        var dir = Path.GetDirectoryName(full)!;
+        if (!Directory.Exists(dir)) return 0;
+        var name = Path.GetFileName(full);
+        var stem = Path.GetFileNameWithoutExtension(full); var ext = Path.GetExtension(full);
+        int n = 0;
+        foreach (var f in Directory.EnumerateFiles(dir, name + ".partial-*").Concat(Directory.EnumerateFiles(dir, stem + "_dup*" + ext + ".partial-*")))
+            try { File.Delete(f); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        return n;
+    }
+
     public async Task<bool> TryServerCopyAsync(IDocumentStore source, string sourceKey, string? sourceETag, string destKey,
         IDictionary<string, string>? metadata, bool overwrite, CancellationToken ct)
     {
