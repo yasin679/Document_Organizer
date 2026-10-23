@@ -90,7 +90,22 @@ The rule is shown in the approval panel, the report summary and the audit entry 
 - **Clearer counts** in step 7: Copied, Already at destination (skipped), Failed and Still to copy now count only what the copy step did. Before, *Skipped as duplicate* also included duplicates found during the scan.
 - The running version is shown at the bottom of the side bar, and `start.cmd` / `start.sh` stop with a message when port 5080 is already in use by another copy.
 
-### 2.8 Other changes
+### 2.8 Maker-checker (new)
+
+- New setting **Maker-checker (second approver)**, off by default. When on, the people who prepared a job (created it, uploaded mapping files, saved rules, scanned, resolved or excluded) cannot approve it.
+- A maker **submits** the job, with an optional note; it is then locked until a different operator or administrator **approves** it or **rejects** it with a reason, or the submitter (or an administrator) **withdraws** it.
+- After approval, excluding or restoring items creates a **change request** that a different person approves or rejects.
+- Every step is in the audit log; the report summary shows who prepared, submitted and approved the job.
+- New API: `POST /jobs/{id}/submit`, `/withdraw`, `/reject`; `GET /jobs/{id}/requests`, `POST /jobs/{id}/requests/{rid}/approve`, `/reject`.
+
+### 2.9 Fixes from live-scenario testing
+
+- Copies interrupted by a crash or power cut left half-written `.partial-` files at the destination. They are now removed when the copy resumes.
+- Folder names derived from mapping values now also avoid the Windows device names COM5–COM9 and LPT4–LPT9, and names such as `CON.tar` (the part before the first dot counts).
+- Reports with more items than an Excel sheet holds (1,048,575 rows) continue on further sheets (*Reconciliation 2*, …) instead of producing a file Excel cannot open.
+- Deleting old jobs by retention now also removes their exclusions and change requests.
+
+### 2.10 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.
 - Resolving an ambiguous file identifies the record by ID and mapping file.

@@ -35,6 +35,10 @@ One row per document with at least an employee code, a document type and a file 
 
 Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder. Files can also differ in column order, extra columns, title rows, CSV delimiter, file type (`.xlsx` and `.csv` together) and date column (a file with only a Year column is fine).
 
+### Can a second person approve each job (maker-checker)?
+
+Yes. An administrator turns on **Maker-checker (second approver)** in Settings. The person who prepares a job then submits it, and a different operator or administrator approves or rejects it. After approval, excluding or restoring items needs a second person too. See User Guide section 10.6.
+
 ### Copying is slow, or the numbers jump by 250 at a time
 
 Earlier builds saved results every 250 files, so on slow drives the screen could stand still for a minute and then jump. Results are now saved every two seconds, and step 7 shows the speed and the time left. The copy itself runs several files at once (**Parallel copies**, 8 by default). If it is still slow, the drives are usually the limit: see *Copying faster* in User Guide section 11 (parallel copies to suit the drive, a different destination drive, antivirus exclusions).
@@ -178,6 +182,10 @@ No. There is no screen or API to change the audit log.
 | A new feature described in the guides is not on the screen | An older copy of the application is still running on port 5080 (another window, or an older folder), so the browser shows that one | Look at **Version** at the bottom of the side bar. Close every Document Organizer window (or end `dotnet` in Task Manager), start `start.cmd` from the new folder, then reload the page (Ctrl+F5). `start.cmd` now warns when port 5080 is already in use. |
 | Accented file names (`é`, `ü`) MISSING although the files exist | Version 2.0 or earlier read every CSV as UTF-8, so a CSV saved by Excel on Windows lost accented characters | Use version 2.1 and scan again |
 | "… has the same content as …, which is already added" | The same mapping file was uploaded twice | Nothing to do; the first copy is kept |
+| "Maker-checker is on: submit the job for approval first" | Maker-checker is on, so a job cannot be approved directly | Click **Submit for approval**; a different person approves |
+| "You prepared or changed this job, so a different person must approve or reject it" | You are one of the job's makers | Ask an operator or administrator who did not work on the job |
+| "This job was submitted for approval by … It cannot be changed" | The job is waiting for a checker | The submitter (or an administrator) clicks **Withdraw**, or the checker rejects it |
+| "Request sent: … will be excluded when a different person approves it" | Maker-checker is on and the job is already approved | A different person approves it under **Change requests** |
 | "Enter a note saying why these items are excluded" | Exclude was clicked without a note | Type the reason; it goes into the reports and the audit log |
 | "Exceptions can be excluded after a scan…" | The job is a draft, scanning or copying | Wait for the scan to finish, or pause the copy |
 | Excluded items came back after a scan | Their status changed (for example a missing file arrived, so the record is READY) | Nothing; exclusions only re-apply when the status is the same |

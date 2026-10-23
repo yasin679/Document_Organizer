@@ -34,7 +34,7 @@ This card takes you from a document mapping file to an organized, reconciled cop
 | 3 | Column mapping | Columns are matched automatically, per file. Fix any shown as **Missing**. | 1 min |
 | 4 | Rules | Keep the defaults unless the client asked for something else. Click **Save and start scan**. | 1 min |
 | 5 | Scan | Wait. 60,000 files scan in seconds from a folder; cloud listings take longer. | 1 min+ |
-| 6 | Review | Read the counts. Open each exception tab. Resolve ambiguous files. Exclude exceptions that need no follow-up, in bulk, with a note. Download the validation report. Tick the confirmation and click **Approve and start copy**. | 10 min+ |
+| 6 | Review | Read the counts. Open each exception tab. Resolve ambiguous files. Exclude exceptions that need no follow-up, in bulk, with a note. Download the validation report. Tick the confirmation and click **Approve and start copy** (with maker-checker on: **Submit for approval**, and a different person approves). | 10 min+ |
 | 7 | Processing | Watch progress. You can **Pause** and **Resume** at any time. | varies |
 | 8 | Reconciliation | Download the reconciliation report (Excel) and attach it to the client's ticket. Retry failed files if any. | 2 min |
 

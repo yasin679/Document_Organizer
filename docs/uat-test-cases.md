@@ -130,6 +130,13 @@ These test cases confirm that Document Organizer v2.1 works on your own machines
 | UAT-35e | H | Kept after a new scan | Go back to step 4 and scan again | The same items are EXCLUDED again | |
 | UAT-35f | M | Restore | Excluded tab: **Restore all N in this view** | Items return to their original status | |
 | UAT-35g | H | Viewer | Sign in as a viewer | Excluded tab visible; no tick boxes or exclude buttons | |
+| UAT-35h | M | Maker-checker on | As admin, Settings: tick **Maker-checker (second approver)**, save | Saved; audit shows the change | |
+| UAT-35i | M | Submit | As operator A, prepare and scan a job, tick the confirmation, **Submit for approval** | Job shows *Submitted for approval*; A sees no Approve button | |
+| UAT-35j | H | Locked while submitted | As A or B, try to change rules, mapping, exclusions or resolve | Refused with *submitted for approval* | |
+| UAT-35k | M | Reject | As operator B, **Reject…** with a reason | Job back to A with the reason shown | |
+| UAT-35l | M | Approve by a second person | A submits again; B approves | Copy starts; audit names B as checker and A as maker | |
+| UAT-35m | H | Checker who changed the job | B excludes an item, A submits, B tries to approve | Refused: B worked on the job | |
+| UAT-35n | M | Change request | After copying, A excludes items | Request pending; nothing changes until B approves under **Change requests** | |
 | UAT-36 | M | Approval needs confirmation | Click **Approve and start copy** without ticking the checkbox | Message "Tick the confirmation box first"; nothing starts | |
 | UAT-37 | M | Approve | Tick, approve, confirm | Status Processing; audit shows Processing approved with user and time | |
 

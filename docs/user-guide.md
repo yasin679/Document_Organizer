@@ -103,6 +103,7 @@ Every page has the same layout: the navigation bar on the left, the page title a
 | Resolve ambiguous files, approve, pause, resume, retry | No | Yes | Yes |
 | Delete a job | No | Own draft jobs | Any job |
 | Change settings, manage users | No | No | Yes |
+| With maker-checker on: approve a job, or approve a change request, that they did not work on | No | Yes | Yes |
 
 ### 2.4 Signing out and session timeout
 
@@ -429,6 +430,21 @@ A file is AMBIGUOUS when more than one mapping record names it, for example `id_
 | 2 | **Cancel** | Goes back without copying. |
 | 3 | **Approve and start** | Records your approval (name and time) in the audit log and starts copying. |
 
+### 10.6 Maker-checker (second approver)
+
+When an administrator turns on **Maker-checker** in Settings, no one can approve a job they worked on. This is the four-eyes control many audit teams require.
+
+- **Makers.** Everyone who creates the job, uploads or removes mapping files, saves rules, scans, resolves ambiguous files, or excludes or restores items is recorded as a maker of that job.
+- **Submit.** When the scan is reviewed, a maker ticks the confirmation and clicks **Submit for approval** (with an optional note for the approver). The job shows **Submitted for approval** and is locked: nobody can change mapping files, rules, exclusions or resolutions until it is approved, rejected or withdrawn. The person who submitted it, or an administrator, can **Withdraw** it to make changes.
+- **Approve or reject.** Any operator or administrator who is not one of the job's makers sees **Approve and start copy** and **Reject…**. Rejecting needs a reason, which the makers see on the job. People who worked on the job see who can approve it instead of the buttons.
+- **After approval.** Excluding or restoring items on an approved job sends a **change request**. Nothing changes until a different person approves it under **Change requests** on the reconciliation step. The requester can withdraw it; anyone else can approve it or reject it with a reason. An approved exclusion keeps the requester as *Excluded by* and adds *(approved by …)* to the note.
+- **Records.** Every submission, withdrawal, rejection, approval and change request is in the audit log. The report summary shows who prepared, submitted and approved the job.
+
+With maker-checker off (the default), the person who prepares a job approves it directly, as before. Viewers can never approve.
+
+> [!NOTE]
+> Someone who changes a job, even to fix one exclusion, becomes one of its makers and can no longer approve it. In a team of two, the person who did not touch the job approves it.
+
 ## 11 Processing (copying)
 
 Step 7 copies READY files in batches. When source and destination are in the same Azure storage account, or use the same S3 connection, files are copied inside the storage service and never pass through the application server. Otherwise (for example Azure to S3) the application streams each file from the source to the destination.
@@ -517,7 +533,7 @@ The log is shown newest first, 100 events per page. It cannot be edited from the
 | # | Item | Description |
 |---|---|---|
 | 1 | Storage | Turns Azure Blob Storage, Amazon S3 and local folders on or off, and lists the configured storage connections, their type and how each signs in. |
-| 2 | Processing permissions | The COPY-only operation, **Allow overwrite on duplicate**, and **Parallel copies** (how many files are copied at the same time, 1 to 64). |
+| 2 | Processing permissions | The COPY-only operation, **Allow overwrite on duplicate**, **Maker-checker (second approver)** (section 10.6), and **Parallel copies** (how many files are copied at the same time, 1 to 64). |
 | 3 | Retention and security | How long jobs, reports and the audit log are kept, and the session timeout. |
 | 4 | My password | Change your own password: current password, new password, **Change password**. |
 | 5 | **Save changes** | Saves the settings (administrators). |

@@ -147,6 +147,7 @@ Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 | `users` | `user_name` (PK, case-insensitive), `display_name`, `role`, `password_hash`, `active`, `created_at`, `last_login` |
 | `settings` | `key`, `value` (in-app settings: storage types enabled, overwrite, parallel copies, retention) |
 | `audit` | `id`, `ts`, `user_name`, `role`, `event`, `job_id`, `details`, `ip` (index on `ts`) |
+| `change_requests` | `id`, `job_id`, `kind` (`exclude`/`restore`), `item_ids_json` (the items at request time), `item_count`, `summary`, `note`, `requested_by`, `requested_at`, `status` (Pending, Approved, Rejected, Withdrawn), `decided_by`, `decided_at`, `decision_note` |
 | `exclusions` | `job_id`, `item_key` (PK together), `from_status`, `note`, `by_user`, `at`. One row per excluded item; `item_key` is `f:<source key>\|<mapping file>\|<record ID>` for a file (one file can have an item per record under the keep-all rule) or `r:<mapping file>\|<record ID>` for a record without a file. |
 
 ## 4 Processing logic
@@ -235,6 +236,10 @@ Example: record E00879, type Medical Certificate, uploaded 25-Nov-2021, file `e0
 7. Integrity is verified by SHA-256 (read both sides) or Content-MD5 (Azure's stored MD5; for S3, the ETag of single-part objects without KMS or customer-key encryption, which equals the MD5).
 8. Cloud destinations get metadata `docorgjobid`, `docorgrecordid` and `docorgemployeecode`. The source object's own metadata is kept if selected; names are adjusted to each provider's rules (Azure metadata names must be valid identifiers).
 9. The item is marked PROCESSED or FAILED with the reason.
+
+### 4.6a Maker-checker
+
+Setting `RequireSecondApprover` (default off). `jobs.makers_json` lists everyone who created or changed the job (create, mapping files, rules, scan, resolve, exclude, restore, submit). `submitted_by`/`submitted_at`/`submit_note` mark a job waiting for a checker; while set and the job is *Awaiting approval*, every changing endpoint refuses. Approve and reject require a user not in `makers_json` (case-insensitive) with role Operator or Administrator. After approval, exclude and restore create a `change_requests` row holding the item IDs selected at request time; approving it (by anyone but the requester) applies the change to those items that are still eligible. Retry and resume are not gated: they only carry out what was already approved.
 
 ### 4.7a Speed and time left
 
@@ -338,7 +343,9 @@ All endpoints are under `/api` except `/healthz`. Roles: V = Viewer, O = Operato
 | `GET /jobs/{id}/reasons[?excluded=true]` | V | Exceptions (or excluded items) counted by status and reason group |
 | `POST /jobs/{id}/items/exclude` | O | Exclude: `{ "ids": [..], "note": "..." }` or `{ "allInView": true, "status", "q", "group", "note" }`; note required |
 | `POST /jobs/{id}/items/restore` | O | Restore: `{ "ids": [..] }` or `{ "allInView": true, "q", "group" }` |
-| `POST /jobs/{id}/approve`, `/pause`, `/resume`, `/retry-failed` | O | Processing control |
+| `POST /jobs/{id}/approve`, `/pause`, `/resume`, `/retry-failed` | O | Processing control (with maker-checker on, approve needs a submitted job and a user who is not a maker) |
+| `POST /jobs/{id}/submit` `{note}`, `/withdraw`, `/reject` `{note}` | O | Maker-checker: submit for approval, withdraw (submitter or A), reject with a reason (not a maker) |
+| `GET /jobs/{id}/requests`; `POST /jobs/{id}/requests/{rid}/approve`, `/requests/{rid}/reject` `{note}` | V / O | Change requests after approval; the requester's own reject is a withdrawal |
 | `GET /jobs/{id}/report?kind=&format=` | V | Validation or reconciliation report |
 | `GET /audit` | V | Audit log |
 | `GET`, `PUT /settings`; `GET`, `POST`, `PUT /users` | A | Administration |
