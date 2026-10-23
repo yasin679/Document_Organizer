@@ -316,11 +316,11 @@ async function scenarioD() {
   for (const f of B) { mkdirSync(lb, { recursive: true }); writeFileSync(join(lb, f), 'job B ' + f); }
   const kcsv = ['EmployeeCode,Type,UploadedOn,FileName', ...A.map(f => `E1,Offer,2024-01-01,${f}`)].join('\r\n');
   const pre = `scen-cc-${Date.now()}/`;
-  async function runQuiet(name, from, to, integrity) {
+  async function runQuiet(name, from, to, integrity, template = '{FileName}') {
     const { id } = await call('POST', '/api/jobs', { name, source: from, destination: to });
     await call('POST', `/api/jobs/${id}/mappings`, form([['k.csv', kcsv]]));
     const job = await call('GET', `/api/jobs/${id}`);
-    await call('PUT', `/api/jobs/${id}/config`, { ...job.config, template: '{FileName}', integrity });
+    await call('PUT', `/api/jobs/${id}/config`, { ...job.config, template, integrity });
     await scan(id); return id;
   }
   const s3loc = p => ({ type: 'S3', connection: s3.connection, container: s3.destinationContainer, prefix: pre + p });
@@ -335,6 +335,12 @@ async function scenarioD() {
   const ia = (await items(ida)).filter(i => i.status === 'PROCESSED').map(i => i.fileName);
   const wrong = ia.filter(f => !readFileSync(join(root, 'D-verify', f), 'utf8').startsWith('job A')).length;
   check(wrong === 0, `the keys job A reports as copied hold job A's content (${wrong} wrong)`);
+  // overlapping destinations: prefix nest/ with template {EmployeeCode}/{FileName} (E1/k.pdf) and prefix nest/E1/ with {FileName}
+  const oa = await runQuiet('D overlap A', s3loc('a/'), s3loc('nest/'), 'None', '{EmployeeCode}/{FileName}');
+  const ob = await runQuiet('D overlap B', s3loc('b/'), s3loc('nest/E1/'), 'None', '{FileName}');
+  await Promise.all([call('POST', `/api/jobs/${oa}/approve`, { acknowledge: true }), call('POST', `/api/jobs/${ob}/approve`, { acknowledge: true })]);
+  const [xa, xb] = await Promise.all([waitFor(oa, ['Completed', 'Completed with exceptions']), waitFor(ob, ['Completed', 'Completed with exceptions'])]);
+  check(xa.counts.PROCESSED + xb.counts.PROCESSED === n, `overlapping S3 destinations written at once: each object copied by one job only (${xa.counts.PROCESSED} + ${xb.counts.PROCESSED} of ${n})`);
 }
 
 async function scenarioE() {

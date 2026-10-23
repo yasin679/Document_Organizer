@@ -138,6 +138,10 @@ Found by the independent checker in its third round and fixed:
 - **Source and destination checks** now follow folder links at any level of the path.
 - **Two jobs created at the same moment** could get the same job number and the second failed with an error (found by the maker's tests this round).
 
+Found by the independent checker in its fourth round (nothing of medium or higher severity remained) and fixed:
+
+- **Overlapping S3 destinations** written by two jobs at once (for example prefix `docs/` with employee folders and prefix `docs/E001/`) could still overwrite each other when the integrity check was off. The copy lock now uses the final object path, so overlapping destinations share it.
+
 ### 2.10 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.

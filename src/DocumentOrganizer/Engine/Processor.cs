@@ -81,7 +81,10 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
                 {
                     // One copy at a time per destination file across all jobs in this application (any storage type), so two jobs
                     // cannot both find the path free and write it; the second sees the first one's file.
-                    var slot = DestSlots[(StringComparer.OrdinalIgnoreCase.GetHashCode(dst.Describe + "|" + (item.Str("dest_key") ?? "")) & int.MaxValue) % DestSlots.Length];
+                    // Keyed by the final object path (store root + prefix + key), so destinations that overlap
+                    // (prefix "p/" with key "E0/x" and prefix "p/E0/" with key "x") share the same lock
+                    var target = (dst.Describe.TrimEnd('/', '\\') + "/" + (item.Str("dest_key") ?? "")).Replace('\\', '/');
+                    var slot = DestSlots[(StringComparer.OrdinalIgnoreCase.GetHashCode(target) & int.MaxValue) % DestSlots.Length];
                     Result r;
                     await slot.WaitAsync(token);
                     try { r = await ProcessOne(jobId, item, cfg, src, dst, overwriteAllowed, token); }
