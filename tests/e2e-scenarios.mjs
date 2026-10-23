@@ -307,6 +307,34 @@ async function scenarioD() {
   const d3 = await run('Scenario D3 S3 -> folder', s3Loc, { type: 'Local', path: join(root, 'D-out') });
   check(count(d3.scan, 'READY') === count(d2.scan, 'READY') && count(d3.done, 'FAILED') === 0, `S3 -> folder: same result from S3 (${JSON.stringify(d3.scan)})`);
   check(existsSync(join(root, 'D-out', 'E1', 'report, final.pdf')) && existsSync(join(root, 'D-out', 'E5', 'a,b.pdf')), 'comma names survive Azure and S3 round trip');
+
+  // two S3 -> S3 jobs on the same connection writing the same keys at the same moment (server-side copy)
+  const n = 120, A = [], B = [];
+  for (let i = 0; i < n; i++) { A.push(`k${i}.pdf`); B.push(`k${i}.pdf`); }
+  const la = join(root, 'D-A'), lb = join(root, 'D-B');
+  for (const f of A) { mkdirSync(la, { recursive: true }); writeFileSync(join(la, f), 'job A ' + f); }
+  for (const f of B) { mkdirSync(lb, { recursive: true }); writeFileSync(join(lb, f), 'job B ' + f); }
+  const kcsv = ['EmployeeCode,Type,UploadedOn,FileName', ...A.map(f => `E1,Offer,2024-01-01,${f}`)].join('\r\n');
+  const pre = `scen-cc-${Date.now()}/`;
+  async function runQuiet(name, from, to, integrity) {
+    const { id } = await call('POST', '/api/jobs', { name, source: from, destination: to });
+    await call('POST', `/api/jobs/${id}/mappings`, form([['k.csv', kcsv]]));
+    const job = await call('GET', `/api/jobs/${id}`);
+    await call('PUT', `/api/jobs/${id}/config`, { ...job.config, template: '{FileName}', integrity });
+    await scan(id); return id;
+  }
+  const s3loc = p => ({ type: 'S3', connection: s3.connection, container: s3.destinationContainer, prefix: pre + p });
+  for (const [l, p] of [[la, 'a/'], [lb, 'b/']]) { const id = await runQuiet('D seed ' + p, { type: 'Local', path: l }, s3loc(p), 'Sha256'); await call('POST', `/api/jobs/${id}/approve`, { acknowledge: true }); await waitFor(id, ['Completed']); }
+  const ida = await runQuiet('D cc A', s3loc('a/'), s3loc('out/'), 'None');
+  const idb = await runQuiet('D cc B', { ...s3loc('b/'), connection: s3.connection.toLowerCase() }, s3loc('out/'), 'None');
+  await Promise.all([call('POST', `/api/jobs/${ida}/approve`, { acknowledge: true }), call('POST', `/api/jobs/${idb}/approve`, { acknowledge: true })]);
+  const [ca, cb] = await Promise.all([waitFor(ida, ['Completed', 'Completed with exceptions']), waitFor(idb, ['Completed', 'Completed with exceptions'])]);
+  check(ca.counts.PROCESSED + cb.counts.PROCESSED === n, `S3 to S3, same keys at the same moment: each key copied by exactly one job (${ca.counts.PROCESSED} + ${cb.counts.PROCESSED} of ${n})`);
+  const back = await runQuiet('D verify', s3loc('out/'), { type: 'Local', path: join(root, 'D-verify') }, 'Sha256');
+  await call('POST', `/api/jobs/${back}/approve`, { acknowledge: true }); await waitFor(back, ['Completed']);
+  const ia = (await items(ida)).filter(i => i.status === 'PROCESSED').map(i => i.fileName);
+  const wrong = ia.filter(f => !readFileSync(join(root, 'D-verify', f), 'utf8').startsWith('job A')).length;
+  check(wrong === 0, `the keys job A reports as copied hold job A's content (${wrong} wrong)`);
 }
 
 async function scenarioE() {

@@ -20,6 +20,8 @@ public sealed class Exclusions(AppDb app)
         ("Source inaccessible%archive%", "File in an archive tier"),
         ("Empty (0-byte)%", "Empty file"),
         ("Year could not be determined%", "Year not found"),
+        ("Mapping record %: % is blank, but the folder template uses%", "Blank value used in the folder template"),
+        ("Mapping record %: %only dots or spaces%", "Value unusable as a folder name"),
         ("Year % is out of range%", "Year out of range"),
         ("No mapping record matches%", "No mapping record"),
         ("% mapping records match this file%", "Several records match"),

@@ -11,6 +11,8 @@ namespace DocumentOrganizer.Engine;
 /// </summary>
 public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Processor> log)
 {
+    private static readonly SemaphoreSlim[] DestSlots = Enumerable.Range(0, 4096).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+
     private sealed record Result(long Id, string Status, string? Reason, string? DestKey, string? SrcHash, string? DstHash, string? Method);
 
     public async Task RunAsync(string jobId, string user, CancellationToken ct, CopyProgress? live = null)
@@ -77,7 +79,13 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
             {
                 await Parallel.ForEachAsync(batch, new ParallelOptions { MaxDegreeOfParallelism = dop, CancellationToken = ct }, async (item, token) =>
                 {
-                    var r = await ProcessOne(jobId, item, cfg, src, dst, overwriteAllowed, token);
+                    // One copy at a time per destination file across all jobs in this application (any storage type), so two jobs
+                    // cannot both find the path free and write it; the second sees the first one's file.
+                    var slot = DestSlots[(StringComparer.OrdinalIgnoreCase.GetHashCode(dst.Describe + "|" + (item.Str("dest_key") ?? "")) & int.MaxValue) % DestSlots.Length];
+                    Result r;
+                    await slot.WaitAsync(token);
+                    try { r = await ProcessOne(jobId, item, cfg, src, dst, overwriteAllowed, token); }
+                    finally { slot.Release(); }
                     lock (gate) pending.Add(r);
                     if (r.Status != ItemStatus.Ready)
                     {
@@ -98,7 +106,7 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
         }
     }
 
-    private async Task<Result> ProcessOne(string jobId, Row item, JobConfig cfg, IDocumentStore src, IDocumentStore dst, bool overwriteAllowed, CancellationToken ct)
+    private async Task<Result> ProcessOne(string jobId, Row item, JobConfig cfg, IDocumentStore src, IDocumentStore dst, bool overwriteAllowed, CancellationToken ct, int attempt = 0)
     {
         long id = item.Long("id");
         var key = item.Str("source_key")!;
@@ -176,6 +184,11 @@ public sealed class Processor(AppDb app, StorageFactory storage, ILogger<Process
                     return new(id, ItemStatus.Failed, $"Integrity check failed: {method} of destination does not match source.", destKey, srcHash, dstHash, method);
             }
             return new(id, ItemStatus.Processed, serverSide || hashWhileCopying ? null : "Copied by streaming (server-side copy not available for this source/destination pair).", destKey, srcHash, dstHash, method);
+        }
+        catch (DestinationExistsException) when (cfg.DuplicateRule is "Rename" or "CompareHash" && attempt < 5)
+        {
+            // Another job took the name we picked a moment ago: pick the next free name
+            return await ProcessOne(jobId, item, cfg, src, dst, overwriteAllowed, ct, attempt + 1);
         }
         catch (DestinationExistsException) { return new(id, ItemStatus.Duplicate, "Destination already exists. Skipped and reported.", null, null, null, null); }
         catch (SourceChangedException) { return new(id, ItemStatus.Failed, "Source file changed after the scan (ETag mismatch), so it was not copied. Retry copies its current version.", null, null, null, null); }

@@ -276,6 +276,8 @@ Step 3 links each column in the mapping file to the field the application needs.
 | Module / Sub-module | `ModuleCode` / `SubModuleCode` | Reports and optional template tokens. |
 | Year | `Year`, `DocumentYear`, `FinancialYear` | Year (when the Year column rule is chosen). |
 
+Employee name, document name, module and sub-module are optional, but if the folder template uses one of them, its column must be mapped (the rules are refused otherwise), and a record whose value is blank, `NULL` or only dots becomes INVALID. That way no file lands one folder level too high.
+
 ## 8 Setting the rules
 
 Step 4 decides how the year is worked out, how folders are named, how files are matched, what happens when a file matches several records or already exists at the destination, and how copies are verified.
@@ -565,7 +567,7 @@ Every source file and every mapping record ends with exactly one status. Only RE
 | MISSING | A mapping record has no matching file in the source. A record that repeats another missing record is also MISSING, and its reason names the first record. | Check whether the file is in another container, bucket, prefix or folder. |
 | AMBIGUOUS | More than one mapping record names the same file (with the default rule **Flag as ambiguous**). | Resolve it (section 10.4), leave it flagged, or scan with the rule **Keep all** to copy it for every record. |
 | DUPLICATE | A repeated mapping record whose file was found (the first record is copied), a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
-| INVALID | A validation error: blank employee code, type or file name (including `NULL`); no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
+| INVALID | A validation error: blank employee code, type or file name (including `NULL`); a blank or dots-only value for a field the folder template uses; no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
 | FAILED | The copy did not succeed, for example storage was busy or the file changed after the scan. | Click **Retry failed**. |
 | EXCLUDED | An exception that a person set aside with a note (section 10.3). Not copied; not counted as an exception. The original status and reason are kept. | Nothing, or **Restore** it from the Excluded tab. |
 

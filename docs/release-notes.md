@@ -127,7 +127,15 @@ Found by the independent checker in its second round and fixed:
 - **A blank value for a folder-template token** (for example `{ModuleCode}` with an empty or `-` module) is INVALID instead of silently removing a folder level.
 - **Unknown setting names** are refused instead of ignored.
 - **Source and destination checks** use each folder's real location (folder links are followed) and respect upper/lower case where the file system does (Linux); cloud connection names are compared without regard to case.
-- **Restarting with the same `DOCORG_ADMIN_PASSWORD`** no longer signs the administrator out or undoes a password changed in the application; the variable is applied only when its value changes.
+- **Restarting with the same `DOCORG_ADMIN_PASSWORD`** no longer signs the administrator out or undoes a password changed in the application; the variable is applied only when its value changes (the console says when it was not applied).
+
+Found by the independent checker in its third round and fixed:
+
+- **Two jobs copying the same keys into the same S3 destination at the same moment** could overwrite each other (the earlier fix covered folders only). Copying to any one destination file is now done one at a time across all jobs, for every storage type.
+- **Rename and Compare-hash rules with two jobs at once** could skip a document instead of renaming it; the next free name is now used.
+- **Items with a blank template value** each had their own reason in *Exceptions by reason*; they now share one reason (*Blank value used in the folder template*) so they can be excluded together.
+- **A template token whose column is not mapped** (for example `{EmployeeName}`) is refused when the rules are saved, instead of making every item INVALID after the scan.
+- **Source and destination checks** now follow folder links at any level of the path.
 
 ### 2.10 Other changes
 

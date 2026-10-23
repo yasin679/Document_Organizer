@@ -86,6 +86,13 @@ if (envPasswordResult == "ok")
     Console.WriteLine();
     Console.ResetColor();
 }
+else if (envPasswordResult == "unchanged")
+{
+    Console.WriteLine();
+    Console.WriteLine("  DOCORG_ADMIN_PASSWORD is the same as last time, so it was not applied again (the admin password may have been");
+    Console.WriteLine("  changed in the application since). To reset the admin password, set it to a different value.");
+    Console.WriteLine();
+}
 else if (envPasswordResult != null)
 {
     Console.ForegroundColor = ConsoleColor.Red;

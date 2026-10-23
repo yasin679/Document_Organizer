@@ -107,6 +107,18 @@ public static class MappingFile
             if (!string.IsNullOrWhiteSpace(v) && !headers.Contains(v) && !errors.Any(e => e.Contains($"'{v}'"))) errors.Add($"Column '{v}' is not in the file.");
         }
         if (!Template.IsValid(cfg.Template, out var tErr)) errors.Add(tErr!);
+        else
+        {
+            // Every column the folder template uses must be mapped, or every item would be INVALID
+            foreach (Match m in Regex.Matches(Template.Normalize(cfg.Template), @"\{(\w+)\}"))
+            {
+                var field = m.Groups[1].Value;
+                if (field.ToLowerInvariant() is "year" or "filename" or "mappingfile" or "employeecode" or "documenttype") continue;
+                var prop = typeof(ColumnMap).GetProperties().FirstOrDefault(p => p.Name.Equals(field, StringComparison.OrdinalIgnoreCase));
+                if (prop != null && string.IsNullOrWhiteSpace(prop.GetValue(map) as string))
+                    errors.Add($"The folder template uses {{{prop.Name}}}, but no column is mapped to {Fields.First(f => f.Field == prop.Name).Label}.");
+            }
+        }
         return errors;
     }
 

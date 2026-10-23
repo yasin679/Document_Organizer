@@ -67,7 +67,7 @@ public sealed class UserStore(AppDb app)
         // Apply it only when the value is new, so a restart with the same value neither signs the admin out
         // nor undoes a password the admin has since changed in the application
         var stamp = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("docorg-admin-env|" + pw)));
-        if (Get("admin") != null && app.GetSetting("admin_env_password") == stamp) return null;
+        if (Get("admin") != null && app.GetSetting("admin_env_password") == stamp) return "unchanged";
         app.SetSetting("admin_env_password", stamp);
         if (Get("admin") == null) { Create("admin", "Administrator", Roles.Administrator, pw); }
         else

@@ -166,9 +166,17 @@ public static class Endpoints
                 // Compare real locations (a folder that is a link to another counts as that folder); case matters except on Windows and macOS
                 static string Real(string p)
                 {
+                    // Resolve a link at any level of the path (D:\Links\Docs where Links points elsewhere)
                     var full = Path.GetFullPath(p);
-                    try { if (new DirectoryInfo(full).ResolveLinkTarget(true) is FileSystemInfo t) full = t.FullName; } catch (IOException) { }
-                    return full.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    var root = Path.GetPathRoot(full) ?? "";
+                    var cur = root;
+                    foreach (var part in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        cur = Path.Combine(cur, part);
+                        try { if (new DirectoryInfo(cur).ResolveLinkTarget(true) is FileSystemInfo t) cur = Path.GetFullPath(t.FullName); }
+                        catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    }
+                    return cur.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 }
                 var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
                 var a = Real(body.Source.Path!); var b = Real(body.Destination.Path!);

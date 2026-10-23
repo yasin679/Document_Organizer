@@ -129,10 +129,11 @@ No. There is no screen or API to change the audit log.
 | "SQLite library not found" (Linux) | The SQLite system library is missing | Install `libsqlite3-0` (Debian/Ubuntu) or `sqlite-libs` (RHEL/Fedora), or use the Docker image |
 | Browser shows "This site can't be reached" | The application is not running, or the console window was closed | Start it again and keep it running |
 | "address already in use" for port 5080 | Another copy is already running | Stop the other copy, or change `Urls` |
-| Admin password not accepted | Password was not set at start, or was shorter than 8 characters | Start again with `DOCORG_ADMIN_PASSWORD` set (or type it at the `start.cmd` prompt) |
+| Admin password not accepted | Password was not set at start, was shorter than 8 characters, or was changed in the application | Start again with `DOCORG_ADMIN_PASSWORD` set to a **new** value (or type it at the `start.cmd` prompt). The same value as last time is not applied again; the console says so |
 | No temporary password appears | A password already exists in the database | Set a new one with `DOCORG_ADMIN_PASSWORD` at start-up |
 | "Sign-in from this computer is blocked for 10 minutes" | 5 wrong passwords from this computer | Wait 10 minutes, or ask an administrator to reset the password |
 | "The job has changed since you opened it" | Someone rescanned, resubmitted or changed exceptions after you opened the page | Reload the page, review again, then approve |
+| "The folder template uses {EmployeeName}, but no column is mapped to Employee name" | A template token has no column | Map the column in step 3 for every mapping file, or remove the token |
 | "This job is busy with another change" | Someone else's change to the same job took longer than a minute | Try again in a moment |
 | "Mapping record …: ModuleCode is blank, but the folder template uses {ModuleCode}" | A template token has no value for this record | Fill the value in the mapping file, or remove the token from the template in step 4 |
 | "Source folder cannot be inside the destination folder" | Copies could be written into the source | Choose a destination outside the source, for example a sibling folder |

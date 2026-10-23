@@ -95,6 +95,12 @@ function xlsxSheets(buf) {
       const mi = await items(mid);
       check(['l1a.pdf', 'l1b.pdf'].every(f => mi.find(i => i.fileName === f)?.status === 'INVALID' && /ModuleCode is blank/.test(mi.find(i => i.fileName === f).reason)) && mi.find(i => i.fileName === 'l1c.pdf')?.destKey === 'E7/Offer/HR/2024/l1c.pdf',
         'a blank (or "-") value for a template token is INVALID instead of silently dropping a folder level');
+      const groups = await call('GET', `/api/jobs/${mid}/reasons`);
+      check(groups.filter(g => g.group === 'Blank value used in the folder template').length === 1 && groups.find(g => g.group === 'Blank value used in the folder template').count === 2,
+        `such items share one reason, so they can be excluded together (${groups.map(g => g.group + '=' + g.count).join(', ')})`);
+      const jm = await call('GET', `/api/jobs/${mid}`);
+      const unmapped = await fails(call('PUT', `/api/jobs/${mid}/config`, { ...jm.config, template: '{EmployeeCode}/{EmployeeName}/{FileName}' }));
+      check(unmapped?.status === 400 && /no column is mapped to Employee name/.test(JSON.stringify(unmapped.body)), 'a template token whose column is not mapped is refused when the rules are saved');
       const done = await copy(id);
       const all = walk(dst);
       check(done.counts.PROCESSED === 6 && all.length === 6 && all.every(p => resolve(p).startsWith(resolve(dst) + '/')), 'all six copied, every file inside the destination folder');
@@ -239,6 +245,19 @@ function xlsxSheets(buf) {
       check(ia.length === n && ib.length === n, 'every item of both jobs checked');
       console.log(`   A copied ${pa}, B copied ${pb}; statuses A ${JSON.stringify(ia.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {}))} B ${JSON.stringify(ib.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {}))}`);
       check(pa + pb === n, `${n} files copied in total, the rest reported as already at the destination (${pa} + ${pb})`);
+    }
+
+    console.log('\n== L9b  Same destination at once with the Rename rule');
+    {
+      const n = 300, a = [], b = [];
+      for (let i = 0; i < n; i++) { a.push([`r${i}.pdf`, 'A' + i]); b.push([`r${i}.pdf`, 'B' + i]); }
+      const sa = files(join(root, 'L9c'), a), sb = files(join(root, 'L9d'), b), dst = join(root, 'L9r-out');
+      const csv = ['EmployeeCode,Type,UploadedOn,FileName', ...a.map(([f]) => `E1,Offer,2024-01-01,${f}`)].join('\r\n');
+      const [ja, jb] = await Promise.all([job('L9 Rename A', sa, dst, 'a.csv', csv, { duplicateRule: 'Rename' }), job('L9 Rename B', sb, dst, 'b.csv', csv, { duplicateRule: 'Rename' })]);
+      await Promise.all([call('POST', `/api/jobs/${ja.id}/approve`, { acknowledge: true }), call('POST', `/api/jobs/${jb.id}/approve`, { acknowledge: true })]);
+      const [da, db2] = await Promise.all([waitFor(ja.id, ['Completed', 'Completed with exceptions']), waitFor(jb.id, ['Completed', 'Completed with exceptions'])]);
+      const out = walk(dst);
+      check(da.counts.PROCESSED === n && db2.counts.PROCESSED === n && out.length === 2 * n, `Rename: every document of both jobs copied, none skipped (${da.counts.PROCESSED} + ${db2.counts.PROCESSED}, ${out.length} files)`);
     }
 
     console.log('\n== L10  A slow upload does not hold up other people');
