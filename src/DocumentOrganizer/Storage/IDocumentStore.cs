@@ -38,8 +38,49 @@ public static class Hashing
             if (!string.IsNullOrEmpty(p?.ContentMd5)) return p!.ContentMd5!;
         }
         await using var s = await store.OpenReadAsync(key, ct);
-        using HashAlgorithm h = method.Equals("Md5", StringComparison.OrdinalIgnoreCase) ? MD5.Create() : SHA256.Create();
-        var bytes = await h.ComputeHashAsync(s, ct);
-        return method.Equals("Md5", StringComparison.OrdinalIgnoreCase) ? Convert.ToBase64String(bytes) : Convert.ToHexString(bytes).ToLowerInvariant();
+        using var h = Create(method);
+        var buf = System.Buffers.ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            int n;
+            while ((n = await s.ReadAsync(buf.AsMemory(0, BufferSize), ct)) > 0) h.AppendData(buf, 0, n);
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(buf); }
+        return Format(method, h.GetHashAndReset());
     }
+
+    /// <summary>Read size for hashing and copying: large reads are much faster on slow or external drives than 4 KB ones.</summary>
+    public const int BufferSize = 1 << 20;
+
+    public static IncrementalHash Create(string method) =>
+        IncrementalHash.CreateHash(method.Equals("Md5", StringComparison.OrdinalIgnoreCase) ? HashAlgorithmName.MD5 : HashAlgorithmName.SHA256);
+
+    public static string Format(string method, byte[] bytes) =>
+        method.Equals("Md5", StringComparison.OrdinalIgnoreCase) ? Convert.ToBase64String(bytes) : Convert.ToHexString(bytes).ToLowerInvariant();
+}
+
+/// <summary>Read-only stream that hashes everything read through it (used to hash the source while copying it).</summary>
+public sealed class HashingReadStream(Stream inner, string method) : Stream
+{
+    private readonly IncrementalHash _hash = Hashing.Create(method);
+    private string? _result;
+    public string Result() => _result ??= Hashing.Format(method, _hash.GetHashAndReset());
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => inner.Length;
+    public override long Position { get => inner.Position; set => throw new NotSupportedException(); }
+    public override int Read(byte[] buffer, int offset, int count) { int n = inner.Read(buffer, offset, count); if (n > 0) _hash.AppendData(buffer, offset, n); return n; }
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        int n = await inner.ReadAsync(buffer, ct);
+        if (n > 0) _hash.AppendData(buffer.Span[..n]);
+        return n;
+    }
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    protected override void Dispose(bool disposing) { if (disposing) _hash.Dispose(); base.Dispose(disposing); }
 }

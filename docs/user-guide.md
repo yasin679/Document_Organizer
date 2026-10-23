@@ -56,7 +56,7 @@ Orange numbered markers on a screenshot point to the item described in the match
 | Job | One run that organizes one set of documents, from a source to a destination, with its own rules and reports. |
 | Source | Where the documents are today: an Azure Blob container, an S3 bucket (each with an optional prefix) or a folder. Only read. |
 | Destination | Where the organized copy is written. Must be separate from the source. |
-| Mapping file | A spreadsheet (`.xlsx` or `.csv`) with one row per document. It says which employee and document type each file belongs to. |
+| Mapping file | A spreadsheet (`.xlsx` or `.csv`) with one row per document. It says which employee and document type each file belongs to. A job can use several mapping files. |
 | Container / bucket | The top-level storage area in Azure Blob Storage (container) or Amazon S3 (bucket). |
 | Prefix | A "virtual folder" inside a container or bucket, for example `hr/`. |
 | Storage connection | A named, pre-configured link to an Azure storage account or an S3 account. Set up by your administrator. |
@@ -79,7 +79,7 @@ Open the link your administrator gives you. On a laptop installation it is http:
 > [!WARNING]
 > **If sign-in fails**
 >
-> After 5 wrong passwords the account is locked for 10 minutes. Ask an administrator to reset your password if you have forgotten it. Every sign-in, successful or not, is recorded in the audit log.
+> After 5 wrong passwords, sign-in from your computer is blocked for 10 minutes. Ask an administrator to reset your password if you have forgotten it. Every sign-in, successful or not, is recorded in the audit log.
 
 ### 2.2 Screen layout
 
@@ -103,6 +103,7 @@ Every page has the same layout: the navigation bar on the left, the page title a
 | Resolve ambiguous files, approve, pause, resume, retry | No | Yes | Yes |
 | Delete a job | No | Own draft jobs | Any job |
 | Change settings, manage users | No | No | Yes |
+| With maker-checker on: approve a job they did not work on, or a change request they did not make | No | Yes | Yes |
 
 ### 2.4 Signing out and session timeout
 
@@ -201,45 +202,62 @@ After **Load demo data** has been used, a blue bar appears on this page.
 | 2 | **Fill in … demo containers** | Fills in the demo Azure containers. Shown for each Azure connection marked for demo use that was running when the demo data was loaded (for example the Azurite emulator). |
 | 3 | **Fill in … demo buckets** | The same for S3 connections marked for demo use (for example MinIO). |
 
-## 6 Uploading the mapping file
+## 6 Uploading the mapping files
 
-Step 2 asks for the mapping file: a spreadsheet with one row per document, usually the document log exported from the HR system as-is.
+Step 2 asks for the mapping file: a spreadsheet with one row per document, usually the document log exported from the HR system as-is. You can upload **several mapping files** for one job, for example one export per module (HR documents, payroll, onboarding). Their records are combined in one scan, and every record keeps the name of the file it came from.
 
 ![Figure 8: Step 2 before upload](images/08-mapping-before.jpg)
 
 | # | Item | What to do |
 |---|---|---|
 | 1 | Step bar | Shows the eight steps. Completed steps have a tick. You can click steps 2 to 4 to go back while the job is not yet approved. |
-| 2 | **Choose the file** | Select the mapping file (`.xlsx` or `.csv`). Files up to 300 MB are accepted. |
-| 3 | **Upload** | Uploads and reads the file. A 176,000-row Excel file takes about 3 seconds. |
+| 2 | **Choose the file(s)** | Select one or more mapping files (`.xlsx` or `.csv`); hold Ctrl or Shift to select several. Up to 300 MB per upload. |
+| 3 | **Upload** | Uploads and reads the files. A 176,000-row Excel file takes about 3 seconds. |
 | 4 | **Use demo mapping file** | Uses the demo mapping file (practice only). |
 
-After the upload the page shows what was found:
+After the upload the page lists every mapping file:
 
-![Figure 9: Step 2 after upload](images/09-mapping-after.jpg)
+![Figure 9: Step 2 with two mapping files](images/09-mapping-after.jpg)
 
 | # | Item | Description |
 |---|---|---|
-| 1 | File summary | File name, number of data rows, the row where the column headers were found, and the file's SHA-256 fingerprint (recorded in the audit log and reports). |
-| 2 | **Replace with another file** | Choose and upload a different file. Uploading again after a scan clears the scan results. |
-| 3 | First rows | The first five data rows, so you can confirm it is the right file. |
-| 4 | **Continue to column mapping** | Moves to step 3. |
+| 1 | Mapping files | One row per file: name, number of data rows, the row where the column headers were found, and the file's SHA-256 fingerprint (recorded in the audit log and reports). With more than one file, a **Total** row adds them up. |
+| 2 | **Remove** | Removes that mapping file from the job. |
+| 3 | **Add more mapping files** | Choose more files to add to the job. |
+| 4 | **Add** | Uploads and reads the chosen files. Adding or removing a file after a scan clears the scan results. |
+| 5 | First rows | The first five data rows of the selected file. With several files, click a file name to see its rows. |
+| 6 | **Continue to column mapping** | Moves to step 3. |
 
 > [!TIP]
 > **No reformatting needed**
 >
-> The application finds the header row by itself, even if the export has title rows above it. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood.
+> The application finds the header row by itself, even if the export has title rows above it. In an Excel workbook it uses the first visible sheet that has a header row, so a cover or summary sheet in front of the data is fine. Dates in Excel date format and text dates such as `25-Nov-2021` are both understood. CSV files may use commas, semicolons or tabs, and may be saved as UTF-8 or by Excel on Windows (accented names such as `Résumé.pdf` are read correctly). Cells that only say `NULL`, `N/A`, `NA`, `None` or `-` (common in database exports) are treated as empty.
+
+> [!NOTE]
+> **Upload checks**
+>
+> A file with the same content as one already added is refused (it would turn every record into a duplicate). Two different files with the same name are kept apart by adding a number, for example `export (2).csv`. If any file in an upload cannot be read, nothing from that upload is kept and the job's current mapping files are untouched.
+
+> [!NOTE]
+> **Several file names in one cell**
+>
+> Some exports list several uploaded files for one document in a single File name cell, separated by commas or semicolons, for example `marksheet_1.jpg,marksheet_2.pdf`. Each name becomes its own entry with its own status: record `ROW-68` becomes `ROW-68/1` and `ROW-68/2`. A name that really contains a comma is kept whole when a file with exactly that name is in the source, even next to other names: `report, final.pdf,offer.pdf` gives `report, final.pdf` and `offer.pdf`. Folder paths in the cell work too. A cell that only holds placeholders, such as `NULL,NULL`, counts as blank. You can turn splitting off in step 4.
 
 ## 7 Mapping the columns
 
-Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name.
+Step 3 links each column in the mapping file to the field the application needs. Columns are matched automatically by name; you only change a row when the file uses a different column name. With several mapping files, each file has its own column mapping, so files with different column names, column order, extra columns or title rows can be combined. If a file's columns are not recognised, map them by hand on its tab; the scan is refused until every file has its required columns, and the message names the file.
 
-![Figure 10: Step 3, column mapping](images/10-column-mapping.jpg)
+> [!NOTE]
+> **Files with different date columns**
+>
+> The year rule (step 4) applies to the whole job, but files can differ. With the rule **UploadedOn year**, a file that has no Uploaded on column but has a Year column uses its Year column; with **Dedicated Year column**, a file without a Year column uses its Uploaded on date. Step 3 shows a note on that file's tab when this applies.
+
+![Figure 10: Step 3, column mapping for the second of two mapping files](images/10-column-mapping.jpg)
 
 | # | Item | Description |
 |---|---|---|
-| 1 | Application field | What the application needs, for example Employee code. |
-| 2 | Required / Optional | Employee code, Document type and File name are always required. Uploaded on is required when the year comes from UploadedOn; Year is required when the year comes from a Year column. |
+| 1 | Mapping file | Shown when the job has several mapping files. Click a file name to see and change its column mapping. A warning lists any file that still has a required column missing. |
+| 2 | Required | Employee code, Document type and File name are always required. Uploaded on is required when the year comes from UploadedOn; Year is required when the year comes from a Year column. |
 | 3 | Column in file | The column used for this field. Choose another column or **— Not mapped —**. |
 | 4 | Sample value | The value in the first data row, to confirm the choice. |
 | 5 | Check | A tick when the field is mapped; **Missing** in red when a required field is not mapped. |
@@ -254,13 +272,15 @@ Step 3 links each column in the mapping file to the field the application needs.
 | Document name | `Name`, `DocumentName`, `Title` | Reports, optional template token. |
 | Description | `Description`, `Remarks` | Reports. |
 | Uploaded on | `UploadedOn`, `UploadDate`, `CreatedOn` | Year (default rule). |
-| File name | `FileName`, `PhysicalFileName`, `FilePath` | Matching mapping records to files. A bare name or a relative path. |
+| File name | `FileName`, `PhysicalFileName`, `FilePath`, `StoredFileName` | Matching mapping records to files. A bare name or a relative path; several names separated by commas or semicolons are split (section 6). |
 | Module / Sub-module | `ModuleCode` / `SubModuleCode` | Reports and optional template tokens. |
 | Year | `Year`, `DocumentYear`, `FinancialYear` | Year (when the Year column rule is chosen). |
 
+Employee name, document name, module and sub-module are optional, but if the folder template uses one of them, its column must be mapped (the rules are refused otherwise), and a record whose value is blank, `NULL` or only dots becomes INVALID. That way no file lands one folder level too high.
+
 ## 8 Setting the rules
 
-Step 4 decides how the year is worked out, how folders are named, how files are matched, what happens when a file already exists at the destination, and how copies are verified.
+Step 4 decides how the year is worked out, how folders are named, how files are matched, what happens when a file matches several records or already exists at the destination, and how copies are verified.
 
 ![Figure 11: Step 4, rules](images/11-rules.jpg)
 
@@ -270,11 +290,16 @@ Step 4 decides how the year is worked out, how folders are named, how files are 
 | 2 | **Folder template** | How destination paths are built. Default: `{EmployeeCode}/{DocumentType}/{Year}/{FileName}`. Available tokens are listed under the box. It must end with `{FileName}`. |
 | 3 | Example | The destination path the template gives for the first mapping record. It updates as you type. |
 | 4 | Matching options | Exact file name and path matching always apply. **Case-insensitive file name** and **Normalized file name** (spaces, dashes and underscores treated alike) are on by default. |
-| 5 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
-| 6 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
-| 7 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
-| 8 | **Keep object metadata** | Cloud destinations only. Keeps the source object's metadata and adds the job ID, record ID and employee code to each copied file. |
-| 9 | **Save and start scan** | Saves the rules and starts step 5. |
+| 5 | Several file names in one cell | On by default. A File name cell listing several files, separated by commas or semicolons, becomes one entry per file (section 6). |
+| 6 | When a file matches several mapping records | **Flag as ambiguous** (default): the file is AMBIGUOUS until a person picks the record in step 6. **Keep all**: the file is copied once for every record that names it, each to its own destination (for example `E1/Offer/2024/x.pdf` and `E2/PAN/2023/x.pdf`), and each copy is its own row in both reports. If two of those records would give the same destination path, one copy is kept and the other is DUPLICATE. |
+| 7 | If the destination file already exists | **Skip and report** (default), **Rename with a suffix** (`_dup1`, `_dup2`), **Compare hash, then decide** (skip if identical, rename if different) or **Overwrite** (only when an administrator allows it). |
+| 8 | **Integrity check after copy** | **SHA-256** (strongest; reads every file twice), **Content-MD5** (uses the checksum the storage already holds where it can, which is cheaper on Azure and for single-part S3 objects) or **None**. |
+| 9 | **Batch size** | Files per batch (1,000, 5,000 or 10,000). Progress is saved after every batch. |
+| 10 | **Save and start scan** | Saves the rules and starts step 5. |
+
+For cloud destinations an extra switch, **Keep object metadata**, keeps the source object's metadata and adds the job ID, record ID and employee code to each copied file.
+
+The token `{MappingFile}` puts each document under the name of the mapping file it came from (without the extension), for example `{MappingFile}/{EmployeeCode}/{DocumentType}/{FileName}` gives `client-d-payroll-log/E00801/Payslip/e00801_payslip.pdf`. Use it to keep the documents of each mapping file apart.
 
 > [!NOTE]
 > **Changing rules later**
@@ -289,12 +314,14 @@ Step 5 runs by itself. The application reads the mapping file, lists every file 
 
 | # | Item | Description |
 |---|---|---|
-| 1 | Current phase | Reading mapping file, Listing source documents, Matching and validating, then Saving results. |
-| 2 | Progress | Items handled so far. |
+| 1 | Current step | Step 1 of 4 *Reading mapping file*, 2 *Listing source documents*, 3 *Matching and validating*, 4 *Saving results*. |
+| 2 | Progress | Rows, files or items handled so far in this step, out of the total when it is known. |
+| 3 | Time left | *About 2 min left · finishes around 19:20* for the current step, worked out from the speed of the last two minutes. While the source is being listed the total is not known yet, so the number of files found is shown instead. |
+| 4 | Speed and time taken | Rows or files per second, how long this step has run, and the total time of the scan so far. |
 
 In testing, a 66,000-row mapping file with 60,000 files was scanned and validated in about 3 seconds from a local folder. Cloud sources take longer because files are listed in pages (5,000 per page on Azure, 1,000 per page on S3).
 
-What is checked: blank employee code, type or file name; a missing or unreadable year; duplicate mapping records; the same file found twice; two files that would land on the same destination path; empty (0-byte) files; files in an archive tier (Azure Archive, S3 Glacier Flexible Retrieval or Deep Archive); and mapping records whose file is not in the source.
+What is checked: blank employee code, type or file name (including placeholders such as `NULL`); a missing or unreadable year; duplicate mapping records; the same file found twice; two files that would land on the same destination path; empty (0-byte) files; files in an archive tier (Azure Archive, S3 Glacier Flexible Retrieval or Deep Archive); and mapping records whose file is not in the source.
 
 ## 10 Reviewing and approving
 
@@ -315,14 +342,64 @@ When the scan finishes the job shows **Awaiting approval** and step 6 opens. Not
 
 | # | Item | Description |
 |---|---|---|
-| 3 | Filters | **All exceptions** (default), one tab per status with its count, or **Everything**. |
-| 4 | Search | Finds items by file name, record ID, employee code or destination path. |
-| 5 | **Resolve** | Shown on AMBIGUOUS items. Opens the resolve panel (section 10.3). |
+| 3 | Filters | **All exceptions** (default), one tab per status with its count, **Excluded**, or **Everything**. Tick boxes and bulk buttons for excluding are described in section 10.3. |
+| 4 | Search | Finds items by file name, record ID, employee code, destination path or reason. |
+| 5 | **Resolve** | Shown on AMBIGUOUS items. Opens the resolve panel (section 10.4). |
 | 6 | Pages | 50 items per page; use **Previous** and **Next**. |
 
 The **Destination / reason** column shows the proposed destination path for READY items, and the reason for every exception in plain words.
 
-### 10.3 Resolving an ambiguous file
+### 10.3 Excluding exceptions in bulk
+
+Some exceptions need no follow-up: blank file names the client has confirmed, scanner test pages, files that belong to another module. **Exclude** them to take them out of the exception lists, with a note saying why. Excluded items:
+
+- are never copied and no longer count as exceptions (a finished job with only processed and excluded items is **Completed**);
+- keep their original status and reason, and stay in both reports with status **EXCLUDED**, who excluded them, when and the note;
+- are excluded again automatically after a new scan, as long as the same file or record still has the same status;
+- can be restored at any time from the **Excluded** tab.
+
+![Figure 14a: Step 6, choosing exceptions to exclude](images/14a-bulk-exclude.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | **Exceptions by reason** | Click to open the list of reasons with their status and number of items. |
+| 2 | **Exclude all** (per reason) | Excludes every item with that reason. **Show** next to it filters the table to that reason. |
+| 3 | Select page | Ticks every exception on this page. Each row also has its own tick box. |
+| 4 | **Exclude selected** | Excludes the ticked rows. The count on the left shows how many are ticked. |
+| 5 | **Exclude all N in this view** | Excludes everything the current tab and search show, on every page. |
+| 6 | **Excluded** tab | Lists excluded items and lets you restore them. |
+
+There are three ways to choose what to exclude. All of them work on every exception type (unmapped, missing, ambiguous, duplicate, validation errors and, after copying, failed):
+
+| Way | How |
+|---|---|
+| Ticked rows | Tick the box on each row (the box in the header ticks the whole page; ticks are kept when you change page), then **Exclude selected**. |
+| Everything in the view | Choose a tab and, if you like, search; then **Exclude all N in this view**. |
+| A whole reason | Open **Exceptions by reason** above the table. Each reason (for example *Blank file name*, *No mapping record*, *Year not found*) is listed with its status and count. **Show** filters the table to that reason; **Exclude all** excludes it at once. |
+
+![Figure 14b: The note is required](images/14b-exclude-note.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Title | Says exactly what will be excluded: the number of ticked items, or all items of a view or reason. |
+| 2 | Note | Why these items need no follow-up. Kept on each item, in both reports and in the audit log. |
+| 3 | **Exclude** | Confirms. **Cancel** changes nothing. |
+
+![Figure 14c: The Excluded tab](images/14c-excluded-tab.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | **Excluded** tab | Every excluded item, with the count. |
+| 2 | Original reason and exclusion | The status and reason the item had, then who excluded it, when, and the note. |
+| 3 | **Restore all** (per reason) | Puts every item of that reason back to its original status. |
+| 4 | **Restore all N in this view** | Restores everything shown. Tick rows and use **Restore selected** for single items. |
+
+A note is required each time and is recorded in the audit log. On the **Excluded** tab the same three ways restore items (**Restore selected**, **Restore all N in this view**, or **Restore all** for a reason); restoring needs no note. Operators and administrators can exclude and restore while the job is awaiting approval, paused or completed; viewers can see excluded items.
+
+> [!NOTE]
+> Excluding is not a fix. If an exception means the mapping file is wrong, correct the mapping file and scan again instead.
+
+### 10.4 Resolving an ambiguous file
 
 A file is AMBIGUOUS when more than one mapping record names it, for example `id_proof.pdf` for two different employees. The application will not choose; a person must.
 
@@ -336,7 +413,7 @@ A file is AMBIGUOUS when more than one mapping record names it, for example `id_
 | 4 | **Leave flagged** | Closes the panel without a decision. The file stays AMBIGUOUS and is not copied. |
 | 5 | **Assign to record …** | Assigns the file. It becomes READY, or DUPLICATE if that record or destination is already taken. |
 
-### 10.4 Checking the output and approving
+### 10.5 Checking the output and approving
 
 ![Figure 16: Step 6, proposed structure and approval](images/16-approval.jpg)
 
@@ -355,6 +432,49 @@ A file is AMBIGUOUS when more than one mapping record names it, for example `id_
 | 2 | **Cancel** | Goes back without copying. |
 | 3 | **Approve and start** | Records your approval (name and time) in the audit log and starts copying. |
 
+### 10.6 Maker-checker (second approver)
+
+When an administrator turns on **Maker-checker** in Settings, no one can approve a job they worked on. This is the four-eyes control many audit teams require.
+
+- **Makers.** Everyone who creates the job, uploads or removes mapping files, saves rules, scans, resolves ambiguous files, or excludes or restores items is recorded as a maker of that job.
+![Figure 14d: Maker-checker on: the maker submits the job](images/14d-submit.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Maker-checker notice | Shown when the setting is on. Lists the people who worked on the job and so cannot approve it. |
+| 2 | Note for the approver | Optional. Shown to the checker with the job. |
+| 3 | Confirmation | Required before submitting. |
+| 4 | **Submit for approval** | Locks the job and sends it to a checker. |
+
+![Figure 14e: What the checker sees](images/14e-checker.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Submitted banner | Who submitted the job, when, and the note. The job cannot be changed while it waits. |
+| 2 | Prepared and submitted by | The makers and the submitter. |
+| 3 | **Approve and start copy** | Starts copying after the confirmation. Refused if the job changed since the page was opened (reload and review again). |
+| 4 | **Reject…** | Sends the job back to the makers with a reason (required). |
+
+![Figure 14f: Change requests after approval](images/14f-change-requests.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Change requests | On the reconciliation step when maker-checker is on. |
+| 2 | Change | What would change (exclude or restore, items and filter) and the requester's note. |
+| 3 | Status | Pending, Approved, Rejected or Withdrawn, with who decided. |
+| 4 | **Approve** | For anyone except the requester: applies the change. |
+| 5 | **Reject…** | With a reason. The requester sees **Withdraw** instead of these buttons. |
+
+- **Submit.** When the scan is reviewed, a maker ticks the confirmation and clicks **Submit for approval** (with an optional note for the approver). The job shows **Submitted for approval** and is locked: nobody can change mapping files, rules, exclusions or resolutions until it is approved, rejected or withdrawn. The person who submitted it, or an administrator, can **Withdraw** it to make changes.
+- **Approve or reject.** Any operator or administrator who is not one of the job's makers sees **Approve and start copy** and **Reject…**. Rejecting needs a reason, which the makers see on the job. People who worked on the job see who can approve it instead of the buttons.
+- **After approval.** Excluding or restoring items on an approved job sends a **change request**. Nothing changes until a different person approves it under **Change requests** on the reconciliation step. The requester can withdraw it; anyone else can approve it or reject it with a reason. An approved exclusion keeps the requester as *Excluded by* and adds *(approved by …)* to the note.
+- **Records.** Every submission, withdrawal, rejection, approval and change request is in the audit log. The report summary shows who prepared, submitted and approved the job.
+
+With maker-checker off (the default), the person who prepares a job approves it directly, as before. Viewers can never approve.
+
+> [!NOTE]
+> Someone who changes a job, even to fix one exclusion, becomes one of its makers and can no longer approve it. In a team of two, the person who did not touch the job approves it.
+
 ## 11 Processing (copying)
 
 Step 7 copies READY files in batches. When source and destination are in the same Azure storage account, or use the same S3 connection, files are copied inside the storage service and never pass through the application server. Otherwise (for example Azure to S3) the application streams each file from the source to the destination.
@@ -364,8 +484,22 @@ Step 7 copies READY files in batches. When source and destination are in the sam
 | # | Item | Description |
 |---|---|---|
 | 1 | Progress | Percentage and number of files done out of the total. |
-| 2 | Counts | Processed (copied and verified), Failed, and Skipped as duplicate (the file already existed at the destination). |
-| 3 | **Pause** | Stops after the files in progress finish. |
+| 2 | Time left | *About 1 h 20 min left · finishes around 21:40*. Worked out from the speed of the last two minutes and the size of the files still to copy, so it adjusts if the pace changes (for example many large scans near the end). |
+| 3 | Speed | Files per second, megabytes per second, data copied so far out of the total, and how long the copy has run. |
+| 4 | Counts | **Copied** (copied and verified), **Already at destination (skipped)** (the file existed there and the duplicate rule is Skip), **Failed**, and **Still to copy**. These count only what the copy step did; duplicates found during the scan are in the review and reconciliation screens. |
+| 5 | **Pause** | Stops after the files in progress finish. |
+
+Several files are copied at the same time (8 by default) and results are saved every two seconds, so the counts move steadily.
+
+> [!TIP]
+> **Copying faster**
+>
+> Speed depends mostly on the drives or storage involved, not on the application. Folder-to-folder copies with an integrity check read each source file once (it is checked while it is copied) and read the copy back once to verify it. To go faster:
+>
+> - Ask an administrator to change **Parallel copies** in Settings: 16 to 32 for SSD, NVMe or network storage; 2 to 4 for a single external USB hard disk (more at once makes a hard disk slower).
+> - Copy to a different physical drive from the source when you can.
+> - Exclude the source and destination folders from real-time antivirus scanning for the duration of the copy, if your IT policy allows it; scanning every new file can slow a copy several times over.
+> - Use **Content-MD5** instead of SHA-256 only for cloud storage that already holds checksums; for folders both read the files.
 
 ![Figure 19: A paused job](images/19-paused.jpg)
 
@@ -389,11 +523,13 @@ When copying finishes the job moves to step 8.
 | # | Item | Description |
 |---|---|---|
 | 1 | Result | Green when every item has a final status; amber when some files failed and can be retried. |
-| 2 | Final counts | Processed, Failed, Unmapped, Missing, Ambiguous, Duplicates, Validation errors and Duration. Click a tile to filter the results. |
+| 2 | Final counts | Processed, Failed, Unmapped, Missing, Ambiguous, Duplicates, Validation errors, Excluded (when any) and Duration. Click a tile to filter the results. |
 | 3 | **Reconciliation Excel** | Downloads the full report with a Summary sheet. |
 | 4 | **Reconciliation CSV** | The same data as CSV. |
 | 5 | Filters | Show exceptions, one status, or everything. |
 | 6 | Results table | Every item with its destination (processed) or reason (exceptions). |
+
+Exceptions can still be excluded or restored here, as in section 10.3; when no exception is left the job becomes **Completed**.
 
 When files failed, a **Retry N failed** button appears. Retrying copies only the failed files, using the current version of each file in the source. Files already processed are left alone.
 
@@ -401,8 +537,8 @@ When files failed, a **Retry N failed** button appears. Retrying copies only the
 
 | Report | Contents |
 |---|---|
-| Validation report (before approval) | Summary sheet (job, source, destination, mapping file and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier. |
-| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by. |
+| Validation report (before approval) | Summary sheet (job, source, destination, every mapping file with its row count and fingerprint, rules, counts) and one row per item: item ID, status, reason, record ID, mapping file, employee code and name, document type and name, description, uploaded on, year, source file and path, proposed destination, size, access tier, and for excluded items the original status, who excluded them, when and the note. |
+| Reconciliation report (after copying) | Summary sheet plus one row per item: job ID, record ID, mapping file, employee code and name, document type and name, description, uploaded on, source file and path, destination path, year, status, exception reason, source hash, destination hash, integrity method, source ETag, processed time (UTC) and processed by, then the same four exclusion columns. |
 
 ## 13 Audit log
 
@@ -427,7 +563,7 @@ The log is shown newest first, 100 events per page. It cannot be edited from the
 | # | Item | Description |
 |---|---|---|
 | 1 | Storage | Turns Azure Blob Storage, Amazon S3 and local folders on or off, and lists the configured storage connections, their type and how each signs in. |
-| 2 | Processing permissions | The COPY-only operation, **Allow overwrite on duplicate**, and **Parallel copies** (how many files are copied at the same time, 1 to 64). |
+| 2 | Processing permissions | The COPY-only operation, **Allow overwrite on duplicate**, **Maker-checker (second approver)** (section 10.6), and **Parallel copies** (how many files are copied at the same time, 1 to 64). |
 | 3 | Retention and security | How long jobs, reports and the audit log are kept, and the session timeout. |
 | 4 | My password | Change your own password: current password, new password, **Change password**. |
 | 5 | **Save changes** | Saves the settings (administrators). |
@@ -456,11 +592,12 @@ Every source file and every mapping record ends with exactly one status. Only RE
 | READY | The file matched one record and passed every check. | Nothing. It is copied after approval. |
 | PROCESSED | Copied and verified. | Nothing. |
 | UNMAPPED | A file in the source has no matching mapping record. | Check with the client or the data team whether the record is missing from the mapping file. |
-| MISSING | A mapping record has no matching file in the source. | Check whether the file is in another container, bucket, prefix or folder. |
-| AMBIGUOUS | More than one mapping record names the same file. | Resolve it (section 10.3) or leave it flagged. |
-| DUPLICATE | A repeated mapping record, a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
-| INVALID | A validation error: blank employee code, type or file name; no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
+| MISSING | A mapping record has no matching file in the source. A record that repeats another missing record is also MISSING, and its reason names the first record. | Check whether the file is in another container, bucket, prefix or folder. |
+| AMBIGUOUS | More than one mapping record names the same file (with the default rule **Flag as ambiguous**). | Resolve it (section 10.4), leave it flagged, or scan with the rule **Keep all** to copy it for every record. |
+| DUPLICATE | A repeated mapping record whose file was found (the first record is copied), a second copy of the same file, two files that would land on the same path, or a file already at the destination. | Read the reason. Usually no action; the first copy is kept. |
+| INVALID | A validation error: blank employee code, type or file name (including `NULL`); a blank or dots-only value for a field the folder template uses; no usable year; an empty file; or a file in an archive tier. | Fix the mapping file or the file, upload the corrected mapping file and scan again. |
 | FAILED | The copy did not succeed, for example storage was busy or the file changed after the scan. | Click **Retry failed**. |
+| EXCLUDED | An exception that a person set aside with a note (section 10.3). Not copied; not counted as an exception. The original status and reason are kept. | Nothing, or **Restore** it from the Excluded tab. |
 
 ## 16 Glossary
 

@@ -16,7 +16,7 @@ This document describes the design of Document Organizer v2.0: its architecture,
 ### 1.2 Scope
 
 - **Sources and destinations:** Azure Blob Storage, Amazon S3 and S3-compatible services, and local or network folders, in any combination.
-- **Input:** a mapping file (`.xlsx` or `.csv`) with one row per document, accepted as exported.
+- **Input:** one or more mapping files (`.xlsx` or `.csv`) with one row per document, accepted as exported. A File name cell may list several files.
 - **Output:** a copy organized as `EmployeeCode / DocumentType / Year / FileName` (template configurable), with a validation report before copying and a reconciliation report after.
 - **Out of scope for v2.0:** OCR or AI classification, single sign-on, automatic rehydration or restore of archived objects, and running several application instances against one database.
 
@@ -113,8 +113,9 @@ All state is in one SQLite database. Document content is never stored.
 | `id` | TEXT PK | `JOB-YYYYMMDD-NNNN` |
 | `name` | TEXT | Job label |
 | `source_json`, `dest_json` | TEXT | Location type (`Local`, `AzureBlob`, `S3`), connection name, container or bucket, prefix, or path. No secrets. |
-| `config_json` | TEXT | Column mapping, year rule, template, matching, duplicate rule, integrity, batch size, metadata option |
-| `mapping_file`, `mapping_original_name`, `mapping_rows`, `mapping_sha256`, `mapping_info_json` | TEXT / INT | Uploaded mapping file, its fingerprint and detected header |
+| `config_json` | TEXT | Column mapping per mapping file, year rule, template, matching (including splitting of several file names), duplicate rule, integrity, batch size, metadata option |
+| `mappings_json` | TEXT | All mapping files of the job: ID, stored path, original name, rows, SHA-256, header row, headers, preview, uploader (v2.1) |
+| `mapping_file`, `mapping_original_name`, `mapping_rows`, `mapping_sha256`, `mapping_info_json` | TEXT / INT | Summary kept for compatibility: first file's path and header, all names, total rows. Jobs from before v2.1 have only these. |
 | `status`, `message` | TEXT | Job status and latest message |
 | `created_by`, `created_at`, `approved_by`, `approved_at` | TEXT | Ownership and approval |
 | `scan_started_at`, `scan_ended_at`, `started_at`, `ended_at` | TEXT | Phase timestamps (UTC) |
@@ -128,12 +129,14 @@ One row per source file and per unmatched mapping record.
 |---|---|
 | `id`, `job_id` | Item key; foreign key to jobs (cascade delete) |
 | `source_key`, `file_name`, `source_size`, `source_etag`, `source_md5`, `access_tier` | Source file facts captured at scan |
-| `record_id`, `employee_code`, `employee_name`, `doc_type`, `doc_name`, `description`, `uploaded_on`, `module_code`, `submodule_code`, `year` | Values from the matched mapping record |
+| `record_id`, `employee_code`, `employee_name`, `doc_type`, `doc_name`, `description`, `uploaded_on`, `module_code`, `submodule_code`, `year` | Values from the matched mapping record. A record split into several files gets IDs `ROW-68/1`, `ROW-68/2`. |
+| `mapping_file` | Name of the mapping file the record came from (v2.1) |
 | `dest_key` | Planned destination path |
 | `status`, `reason`, `candidates_json` | Item status, plain-language reason, candidate records for AMBIGUOUS |
 | `source_hash`, `dest_hash`, `integrity_method` | Integrity evidence after copy |
 | `processed_at`, `processed_by`, `attempts`, `started_at` | Copy tracking used for resume and retry |
 | `resolved_by`, `resolution_note` | Manual resolution of AMBIGUOUS items |
+| `excluded_from`, `excluded_by`, `excluded_at`, `exclusion_note` | For EXCLUDED items: the status before exclusion, who, when (UTC) and why |
 
 Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 
@@ -144,6 +147,8 @@ Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 | `users` | `user_name` (PK, case-insensitive), `display_name`, `role`, `password_hash`, `active`, `created_at`, `last_login` |
 | `settings` | `key`, `value` (in-app settings: storage types enabled, overwrite, parallel copies, retention) |
 | `audit` | `id`, `ts`, `user_name`, `role`, `event`, `job_id`, `details`, `ip` (index on `ts`) |
+| `change_requests` | `id`, `job_id`, `kind` (`exclude`/`restore`), `item_ids_json` (the items at request time), `item_count`, `summary`, `note`, `requested_by`, `requested_at`, `status` (Pending, Approved, Rejected, Withdrawn), `decided_by`, `decided_at`, `decision_note` |
+| `exclusions` | `job_id`, `item_key` (PK together), `from_status`, `note`, `by_user`, `at`. One row per excluded item; `item_key` is `f:<source key>\|<mapping file>\|<record ID>` for a file (one file can have an item per record under the keep-all rule) or `r:<mapping file>\|<record ID>` for a record without a file. |
 
 ## 4 Processing logic
 
@@ -158,15 +163,29 @@ Indexes: `(job_id, status)` and `(job_id, dest_key)`.
 | Paused | Operator paused, or the application restarted mid-copy | Processing |
 | Completed / Completed with exceptions | All READY items handled | Processing (retry failed) |
 
-### 4.2 Reading the mapping file
+### 4.2 Reading the mapping files
 
-1. The file is read as `.xlsx` (streaming XML) or `.csv` (delimiter detected).
+1. A job has one or more mapping files. Each is read as `.xlsx` (streaming XML; the first visible worksheet whose first 20 rows contain a header row, else the first visible worksheet) or `.csv` (delimiter detected; UTF-8, or Windows-1252 when the file is not valid UTF-8; a byte-order mark selects UTF-16).
+   Uploads are checked: a file whose SHA-256 equals one already in the job (or in the same upload) is refused; a duplicate file name gets a ` (n)` suffix; if any file of an upload fails, every file saved by that upload is deleted. New files always get new IDs, so a refused replacement never touches the current files.
 2. The header row is the first row within the first 20 that matches at least 3 known column names.
-3. Columns are auto-mapped by normalized name (spaces, dashes, dots and underscores removed; case ignored) using a list of common aliases.
-4. Dates accept Excel serial numbers and common text formats (for example `25-Nov-2021`, `2021-11-25`, `dd/MM/yyyy`).
-5. The file's SHA-256 fingerprint and row count are stored and written to the audit log.
+3. Columns are auto-mapped per file by normalized name (spaces, dashes, dots and underscores removed; case ignored) using a list of common aliases. Each file keeps its own column mapping (`FileColumns` in the configuration, keyed by mapping file ID).
+4. Cells that only contain a placeholder (`NULL`, `N/A`, `NA`, `#N/A`, `None`, `Nil`, `-`, `--`, `(null)`) are treated as empty.
+5. Dates accept Excel serial numbers and common text formats (for example `25-Nov-2021`, `2021-11-25`, `dd/MM/yyyy`).
+6. Year rule per file: with `UploadedOn`, a file whose column map has no Uploaded on column but has a Year column uses the Year column; with `YearColumn`, the reverse. Records carry `HasUploadedOnColumn` / `HasYearColumn` (also kept in ambiguous candidates, so a resolution uses the same rule).
+7. Saving the configuration without `fileColumns` (as v2.0 clients do) changes only the first file's columns; other files keep their saved mapping.
+8. Every record is tagged with its mapping file name. Each file's SHA-256 fingerprint and row count are stored and written to the audit log.
 
-### 4.3 Matching
+### 4.3 Several file names in one cell
+
+The source is listed **before** matching. Then, if **Several file names in one cell** is on (the default), every record whose File name contains a comma, semicolon or line break is checked:
+
+1. If the whole value is the name of a file in the source (optionally with a folder path), it is kept as one file name (real names can contain commas).
+2. Otherwise it is split on those separators. Adjacent parts (up to five) are joined back, with their original separators, when the joined text is a source file name, so `report, final.pdf,x.pdf` gives `report, final.pdf` and `x.pdf`. Empty parts and placeholders are dropped, and repeated names within the cell are removed. A cell with only placeholders is treated as blank (INVALID).
+3. Each part becomes its own record with the same employee, type, dates and descriptions, and the ID `<record ID>/<n>` (for example `ROW-68/1`, `ROW-68/2`).
+
+Records are given an internal sequence number, so matching never depends on record IDs being unique (IDs can repeat across mapping files).
+
+### 4.4 Matching
 
 For each source file, candidate records are found in this order, stopping at the first step that finds any:
 
@@ -176,26 +195,31 @@ For each source file, candidate records are found in this order, stopping at the
 
 If more than one record matches and some records carry a relative path, the path is used to narrow the match. If one record remains, the file is evaluated; if several remain, the file is AMBIGUOUS. Mapping records that no file matched become MISSING.
 
-### 4.4 Validation and statuses
+### 4.5 Validation and statuses
+
+Repeated records (same normalized file name, employee code and document type as an earlier record, in any mapping file) are set aside before matching and decided afterwards: DUPLICATE if the earlier record found its file, otherwise MISSING with a reason naming the earlier record. This keeps a missing document from being counted once as missing and once as a duplicate.
 
 | Status | Rule |
 |---|---|
 | READY | One record; employee code, type and file name present; valid year; file size above 0; not in an archive tier; planned path unique |
 | UNMAPPED | No record matches the file |
-| MISSING | Record with no matching file |
-| AMBIGUOUS | More than one record matches |
-| DUPLICATE | Same file, employee and type repeated in the mapping file, the same record matched twice, or two items would write the same destination path |
-| INVALID | Blank required value, no year, 0-byte file, or object in an archive tier (Azure `Archive`; S3 `GLACIER` or `DEEP_ARCHIVE`) |
+| MISSING | Record with no matching file, or a repeat of such a record |
+| AMBIGUOUS | More than one record matches (rule `AmbiguousRule` = `Flag`, the default). With `KeepAll`, the file instead gets one item per matching record, each evaluated as if it were the only match: READY with its own destination, DUPLICATE if the record is already matched or the path is taken, or INVALID. Files are still counted once (`discovered` counts distinct source keys). |
+| DUPLICATE | Same file, employee and type repeated in the mapping files when the first record found its file, the same record matched twice, or two items would write the same destination path |
+| INVALID | Blank required value (including placeholders such as `NULL`), no year, 0-byte file, or object in an archive tier (Azure `Archive`; S3 `GLACIER` or `DEEP_ARCHIVE`) |
 | PROCESSED | Copied and verified |
 | FAILED | Copy failed or source changed since scan |
+| EXCLUDED | An exception set aside by an operator with a note; never copied; not an exception |
 
-### 4.5 Destination path
+**Exclusion.** UNMAPPED, MISSING, AMBIGUOUS, DUPLICATE, INVALID and FAILED items can be excluded while the job is awaiting approval, paused or completed (not while a scan or copy runs). The item keeps its data and reason; `excluded_from` keeps its status. Each exclusion is also stored in `exclusions`, and after every scan an item with the same key and the same status is excluded again before the items are saved. Restoring sets the status back and deletes the stored exclusion. A completed job is *Completed with exceptions* while any item other than PROCESSED or EXCLUDED is left; excluding or restoring recalculates it. Reasons are grouped for display and bulk actions by an SQL `CASE` over the reason text (for example `Blank FileName%` → *Blank file name*).
 
-The folder template uses the tokens `{EmployeeCode}`, `{EmployeeName}`, `{DocumentType}`, `{DocumentName}`, `{Year}`, `{ModuleCode}`, `{SubModuleCode}` and `{FileName}` (`<Token>` style is also accepted). Values are sanitised so they are valid as Windows folder names and as blob and object keys. The template must include `{FileName}`; an unknown token is rejected.
+### 4.6 Destination path
+
+The folder template uses the tokens `{EmployeeCode}`, `{EmployeeName}`, `{DocumentType}`, `{DocumentName}`, `{Year}`, `{ModuleCode}`, `{SubModuleCode}`, `{MappingFile}` (mapping file name without extension) and `{FileName}` (`<Token>` style is also accepted). Values are sanitised so they are valid as Windows folder names and as blob and object keys. The template must include `{FileName}`; an unknown token is rejected.
 
 Example: record E00879, type Medical Certificate, uploaded 25-Nov-2021, file `e00879_final_certificate.pdf` gives `E00879/Medical Certificate/2021/e00879_final_certificate.pdf`.
 
-### 4.6 Copying
+### 4.7 Copying
 
 1. READY items are processed in batches (default 5,000) with up to 8 parallel copies (configurable 1 to 64).
 2. Before each batch the items' `started_at` is recorded.
@@ -213,7 +237,17 @@ Example: record E00879, type Medical Certificate, uploaded 25-Nov-2021, file `e0
 8. Cloud destinations get metadata `docorgjobid`, `docorgrecordid` and `docorgemployeecode`. The source object's own metadata is kept if selected; names are adjusted to each provider's rules (Azure metadata names must be valid identifiers).
 9. The item is marked PROCESSED or FAILED with the reason.
 
-### 4.7 Resume and retry
+### 4.6a Maker-checker
+
+Setting `RequireSecondApprover` (default off). `jobs.makers_json` lists everyone who created or changed the job (create, mapping files, rules, scan, resolve, exclude, restore, submit). `submitted_by`/`submitted_at`/`submit_note` mark a job waiting for a checker; while set and the job is *Awaiting approval*, every changing endpoint refuses. Approve and reject require a user not in `makers_json` (case-insensitive) with role Operator or Administrator. After approval, exclude and restore create a `change_requests` row holding the item IDs selected at request time; approving it (by anyone but the requester) applies the change to those items that are still eligible. Retry and resume are not gated: they only carry out what was already approved.
+
+### 4.7a Speed and time left
+
+- **Hash while copying.** Folder to folder with an integrity check, the source is streamed to the destination through a hashing stream (1 MB reads), so each source file is read once; the destination is then read once to verify. Before, the source was read twice (copy, then hash). Cloud server-side copies are unchanged; other streaming copies (for example folder to S3) also hash the source on the way.
+- **Results saved every 2 seconds** or every 250 files, whichever comes first (was every 250 files only).
+- **Time left.** A sliding-window meter (last two minutes) of items and bytes. Copying: time left = bytes still to copy ÷ bytes per second (falls back to files ÷ files per second when sizes are unknown). Scanning: per step, items left ÷ items per second, for steps with a known total. Live figures are kept in memory while a job runs and returned by `GET /jobs/{id}` as `progress` (`done`, `total`, `bytesDone`, `bytesTotal`, `copied`, `skipped`, `failed`, `rate`, `bytesRate`, `etaSeconds`, `elapsedSeconds`, `live`) and `scan` (`phase`, `done`, `total`, `rate`, `etaSeconds`, `phaseElapsedSeconds`, `elapsedSeconds`). `copyResult` gives the copy step's processed, skipped and failed counts.
+
+### 4.8 Resume and retry
 
 At start-up, any job left in Processing is marked Paused. On resume, items with `started_at` set but not finished are checked: if the destination exists and its SHA-256 equals the source, the item is marked PROCESSED without copying again. **Retry failed** refreshes each failed item's ETag and size from the source and copies only those items.
 
@@ -273,7 +307,7 @@ Temporary credentials are cached and refreshed five minutes before they expire.
 
 | Area | Control |
 |---|---|
-| Authentication | Local accounts; PBKDF2-SHA256, 210,000 iterations; 10-character, 3-class policy; lockout for 10 minutes after 5 failures |
+| Authentication | Local accounts; PBKDF2-SHA256, 210,000 iterations; 10-character, 3-class policy; sign-in blocked for 10 minutes after 5 failures per user name and IP address; server-side sessions (table `sessions`) ended by sign-out, password change or reset; every change to one job is handled one request at a time (per-job lock), and approval can carry the job `version` so a stale page cannot approve a changed job (HTTP 409) |
 | Session | HttpOnly, SameSite=Strict cookie, Secure over HTTPS; sliding inactivity timeout (default 30 minutes) |
 | Authorization | Policies View, Operate and Admin mapped to Viewer, Operator and Administrator on every endpoint; disabled users lose access on their next request |
 | CSRF | State-changing API requests must carry the header `X-DocOrg: 1` |
@@ -298,12 +332,20 @@ All endpoints are under `/api` except `/healthz`. Roles: V = Viewer, O = Operato
 | `POST /connections/test` | O | Check access to a location |
 | `GET /jobs`, `/jobs/{id}` | V | List and detail |
 | `POST /jobs`; `DELETE /jobs/{id}` | O | Create; delete (own Draft, or any for A) |
-| `POST /jobs/{id}/mapping`, `/jobs/{id}/mapping/demo` | O | Upload mapping file |
+| `POST /jobs/{id}/mapping` | O | Replace all mapping files with the uploaded file(s) |
+| `POST /jobs/{id}/mappings` | O | Add one or more mapping files (multipart, any field name) |
+| `DELETE /jobs/{id}/mappings/{mappingId}` | O | Remove one mapping file |
+| `POST /jobs/{id}/mapping/demo` | O | Use the demo mapping file |
 | `PUT /jobs/{id}/config` | O | Save rules |
 | `POST /jobs/{id}/scan` | O | Start scan |
-| `GET /jobs/{id}/items`, `/jobs/{id}/tree` | V | Results and proposed structure |
+| `GET /jobs/{id}/items?status=&q=&group=&page=`, `/jobs/{id}/tree` | V | Results (filter by status, search, reason group) and proposed structure |
 | `POST /jobs/{id}/items/{itemId}/resolve` | O | Resolve ambiguous file |
-| `POST /jobs/{id}/approve`, `/pause`, `/resume`, `/retry-failed` | O | Processing control |
+| `GET /jobs/{id}/reasons[?excluded=true]` | V | Exceptions (or excluded items) counted by status and reason group |
+| `POST /jobs/{id}/items/exclude` | O | Exclude: `{ "ids": [..], "note": "..." }` or `{ "allInView": true, "status", "q", "group", "note" }`; note required |
+| `POST /jobs/{id}/items/restore` | O | Restore: `{ "ids": [..] }` or `{ "allInView": true, "q", "group" }` |
+| `POST /jobs/{id}/approve`, `/pause`, `/resume`, `/retry-failed` | O | Processing control (with maker-checker on, approve needs a submitted job and a user who is not a maker) |
+| `POST /jobs/{id}/submit` `{note}`, `/withdraw`, `/reject` `{note}` | O | Maker-checker: submit for approval, withdraw (submitter or A), reject with a reason (not a maker) |
+| `GET /jobs/{id}/requests`; `POST /jobs/{id}/requests/{rid}/approve`, `/requests/{rid}/reject` `{note}` | V / O | Change requests after approval; the requester's own reject is a withdrawal |
 | `GET /jobs/{id}/report?kind=&format=` | V | Validation or reconciliation report |
 | `GET /audit` | V | Audit log |
 | `GET`, `PUT /settings`; `GET`, `POST`, `PUT /users` | A | Administration |
@@ -314,6 +356,8 @@ A location in the API is `{ "type": "Local" | "AzureBlob" | "S3", "path": "...",
 ## 9 Performance and test results
 
 ### 9.1 Automated end-to-end test
+
+`tests/e2e-mapping.mjs` (v2.1) checks splitting of several file names in one cell, a real file name containing a comma, `NULL` placeholders, repeats of missing records, two mapping files with different column names in one job, removing and adding mapping files, the `{MappingFile}` token and the Mapping File report column (24 checks).
 
 `tests/e2e.mjs` runs the full flow and checks counts per status, matching options, the reference example path, ambiguity resolution, both reports, integrity hashes, the CSRF guard and role restrictions. For v2.0 it runs seven jobs:
 
@@ -339,14 +383,28 @@ A location in the API is `{ "type": "Local" | "AzureBlob" | "S3", "path": "...",
 | Second run into the same destination | Every item DUPLICATE; nothing overwritten |
 | Copied objects | `docorgjobid`, `docorgrecordid`, `docorgemployeecode` metadata present |
 
-### 9.3 Scale
+### 9.3 Replay of a real job (v2.1)
+
+A production job's reconciliation report (51,300 mapping records, 107,799 source files, a local folder) was rebuilt with placeholder file contents and scanned with v2.0 and v2.1. v2.0 reproduced the original report exactly.
+
+| Status | v2.0 | v2.1 | Why |
+|---|---|---|---|
+| Processed | 41,296 | 55,948 | 5,840 records listed 14,657 files in one cell; they are now split and matched |
+| Unmapped | 66,502 | 51,850 | The same 14,652 files now have a record |
+| Missing | 8,351 | 923 | Multi-file cells no longer counted as one missing file; 1,591 `NULL` file names are now INVALID |
+| Invalid | 1,639 | 3,231 | 1,592 `NULL` file names (blank) added |
+| Duplicate | 14 | 15 | 4 repeats of missing records moved to MISSING / INVALID; 5 files listed twice after splitting |
+
+Scan time: 4.8 seconds; copy of 55,948 files: 7.8 seconds (local disk).
+
+### 9.4 Scale
 
 | Measure | Result |
 |---|---|
 | Mapping file of 66,000 rows with 60,040 source files (local folder) | Read, matched and validated in about 3 seconds |
 | v1.0 scale test: 176,000-row Excel file and 60,000 files | Read 3 s, scan 15 s, copy with SHA-256 30 s; restart mid-copy and resume gave exactly 60,000 processed, no duplicates |
 
-### 9.4 Known limitations
+### 9.5 Known limitations
 
 | Limitation | Plan |
 |---|---|

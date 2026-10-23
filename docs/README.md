@@ -8,7 +8,7 @@
 | DO-FAQ-04 | FAQ and Troubleshooting | Everyone | [faq-and-troubleshooting.md](faq-and-troubleshooting.md) | [PDF](pdf/DO-FAQ-04_FAQ_and_Troubleshooting.pdf) |
 | DO-TD-05 | Technical Design | Developers, reviewers, security | [technical-design.md](technical-design.md) | [PDF](pdf/DO-TD-05_Technical_Design.pdf) |
 | DO-UAT-06 | UAT Test Cases | Testers, sign-off owners | [uat-test-cases.md](uat-test-cases.md) | [PDF](pdf/DO-UAT-06_UAT_Test_Cases.pdf) |
-| DO-RN-07 | Release Notes v2.0 | Everyone | [release-notes.md](release-notes.md) | [PDF](pdf/DO-RN-07_Release_Notes_v2.0.pdf) |
+| DO-RN-07 | Release Notes v2.1 | Everyone | [release-notes.md](release-notes.md) | [PDF](pdf/DO-RN-07_Release_Notes_v2.1.pdf) |
 
 The Markdown files are the source. The PDFs are generated from them, with screenshots from `images/`:
 

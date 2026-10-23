@@ -6,7 +6,7 @@ using System.Xml;
 namespace DocumentOrganizer.Infrastructure;
 
 /// <summary>
-/// Streaming reader for the first worksheet of an .xlsx file. Rows are yielded one at a time,
+/// Streaming reader for the data worksheet of an .xlsx file. Rows are yielded one at a time,
 /// so very large mapping files (175k+ rows) are not loaded into memory as a whole.
 /// Cell values are returned as strings; date-formatted numbers are returned as ISO dates (yyyy-MM-dd).
 /// </summary>
@@ -14,12 +14,25 @@ public static class XlsxReader
 {
     private static readonly XmlReaderSettings Xs = new() { IgnoreWhitespace = false, DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
 
-    public static IEnumerable<string[]> ReadRows(string path)
+    /// <summary>
+    /// Reads the rows of the data sheet: the first visible sheet that has a header row (per <paramref name="isHeader"/>)
+    /// in its first 20 rows, so a workbook that starts with a cover or summary sheet still works; otherwise the first visible sheet.
+    /// </summary>
+    public static IEnumerable<string[]> ReadRows(string path, Func<string[], bool>? isHeader = null)
     {
         using var zip = ZipFile.OpenRead(path);
         var shared = ReadSharedStrings(zip);
         var dateStyles = ReadDateStyles(zip);
-        var sheetPath = FirstSheetPath(zip);
+        var sheets = SheetPaths(zip);
+        if (sheets.Count == 0) throw new InvalidDataException("Workbook has no sheets.");
+        var sheetPath = sheets[0];
+        if (isHeader != null && sheets.Count > 1)
+            sheetPath = sheets.FirstOrDefault(p => ReadSheet(zip, p, shared, dateStyles).Take(20).Any(isHeader)) ?? sheets[0];
+        foreach (var r in ReadSheet(zip, sheetPath, shared, dateStyles)) yield return r;
+    }
+
+    private static IEnumerable<string[]> ReadSheet(ZipArchive zip, string sheetPath, List<string> shared, HashSet<int> dateStyles)
+    {
         var entry = zip.GetEntry(sheetPath) ?? throw new InvalidDataException("Worksheet not found in workbook.");
         using var s = entry.Open();
         using var xr = XmlReader.Create(s, Xs);
@@ -158,29 +171,37 @@ public static class XlsxReader
         return result;
     }
 
-    private static string FirstSheetPath(ZipArchive zip)
+    /// <summary>Worksheet entry paths in workbook order, visible sheets first (hidden ones last).</summary>
+    private static List<string> SheetPaths(ZipArchive zip)
     {
         var wb = zip.GetEntry("xl/workbook.xml") ?? throw new InvalidDataException("Not a valid .xlsx file (workbook.xml missing).");
         var doc = new XmlDocument { XmlResolver = null };
         using (var s = wb.Open()) using (var xr = XmlReader.Create(s, Xs)) doc.Load(xr);
         var ns = new XmlNamespaceManager(doc.NameTable);
         ns.AddNamespace("x", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
-        ns.AddNamespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
-        var sheet = (XmlElement?)doc.SelectSingleNode("//x:sheets/x:sheet", ns) ?? throw new InvalidDataException("Workbook has no sheets.");
-        var rid = sheet.GetAttribute("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+        var targets = new Dictionary<string, string>();
         var rels = zip.GetEntry("xl/_rels/workbook.xml.rels");
         if (rels != null)
         {
             var rd = new XmlDocument { XmlResolver = null };
             using (var s = rels.Open()) using (var xr = XmlReader.Create(s, Xs)) rd.Load(xr);
             foreach (XmlElement rel in rd.GetElementsByTagName("Relationship"))
-                if (rel.GetAttribute("Id") == rid)
-                {
-                    var target = rel.GetAttribute("Target").TrimStart('/');
-                    return target.StartsWith("xl/") ? target : "xl/" + target;
-                }
+            {
+                var target = rel.GetAttribute("Target").TrimStart('/');
+                targets[rel.GetAttribute("Id")] = target.StartsWith("xl/") ? target : "xl/" + target;
+            }
         }
-        return "xl/worksheets/sheet1.xml";
+        var visible = new List<string>(); var hidden = new List<string>(); int n = 0;
+        foreach (XmlElement sheet in doc.SelectNodes("//x:sheets/x:sheet", ns)!)
+        {
+            n++;
+            var rid = sheet.GetAttribute("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+            var path = targets.TryGetValue(rid, out var t) ? t : $"xl/worksheets/sheet{n}.xml";
+            if (zip.GetEntry(path) == null) continue;   // chart sheets and the like
+            (sheet.GetAttribute("state") is "hidden" or "veryHidden" ? hidden : visible).Add(path);
+        }
+        if (visible.Count + hidden.Count == 0 && zip.GetEntry("xl/worksheets/sheet1.xml") != null) visible.Add("xl/worksheets/sheet1.xml");
+        return visible.Concat(hidden).ToList();
     }
 }
 
@@ -305,7 +326,7 @@ public static class Csv
 {
     public static IEnumerable<string[]> ReadRows(string path)
     {
-        using var sr = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        using var sr = new StreamReader(path, DetectEncoding(path), detectEncodingFromByteOrderMarks: true);
         char delim = ',';
         var first = sr.ReadLine();
         if (first == null) yield break;
@@ -330,6 +351,25 @@ public static class Csv
             else field.Append(ch);
         }
         if (field.Length > 0 || row.Count > 0) { row.Add(field.ToString()); yield return row.ToArray(); }
+    }
+
+    /// <summary>UTF-8 unless the file is not valid UTF-8 (a CSV saved by Excel on Windows): then Windows-1252.</summary>
+    public static Encoding DetectEncoding(string path)
+    {
+        var strict = new UTF8Encoding(false, true).GetDecoder();
+        var buf = new byte[1 << 16]; var chars = new char[(1 << 16) + 4];
+        using var fs = File.OpenRead(path);
+        int n;
+        try
+        {
+            while ((n = fs.Read(buf, 0, buf.Length)) > 0) strict.GetChars(buf, 0, n, chars, 0, flush: false);
+            return Encoding.UTF8;
+        }
+        catch (DecoderFallbackException)
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            return Encoding.GetEncoding(1252);
+        }
     }
 
     public static string Escape(string? v)

@@ -25,6 +25,7 @@ builder.Services.AddSingleton<StorageFactory>();
 builder.Services.AddSingleton<Scanner>();
 builder.Services.AddSingleton<Processor>();
 builder.Services.AddSingleton<Reports>();
+builder.Services.AddSingleton<Exclusions>();
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddSingleton<DemoData>();
 
@@ -52,8 +53,10 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     o.Events.OnValidatePrincipal = ctx =>
     {
         var name = ctx.Principal?.Identity?.Name;
-        var u = name == null ? null : ctx.HttpContext.RequestServices.GetRequiredService<UserStore>().Get(name);
-        if (u == null || u.Long("active") == 0 || u.Str("role") != ctx.Principal!.FindFirstValue(ClaimTypes.Role))
+        var store = ctx.HttpContext.RequestServices.GetRequiredService<UserStore>();
+        var u = name == null ? null : store.Get(name);
+        // Signed out, password changed or reset: the session no longer exists on the server
+        if (u == null || u.Long("active") == 0 || u.Str("role") != ctx.Principal!.FindFirstValue(ClaimTypes.Role) || !store.SessionValid(ctx.Principal!.FindFirstValue("sid")))
         { ctx.RejectPrincipal(); return ctx.HttpContext.SignOutAsync(); }
         return Task.CompletedTask;
     };
@@ -82,6 +85,13 @@ if (envPasswordResult == "ok")
     Console.WriteLine("  Admin password set from DOCORG_ADMIN_PASSWORD. Sign in with user name: admin");
     Console.WriteLine();
     Console.ResetColor();
+}
+else if (envPasswordResult == "unchanged")
+{
+    Console.WriteLine();
+    Console.WriteLine("  DOCORG_ADMIN_PASSWORD is the same as last time, so it was not applied again (the admin password may have been");
+    Console.WriteLine("  changed in the application since). To reset the admin password, set it to a different value.");
+    Console.WriteLine();
 }
 else if (envPasswordResult != null)
 {

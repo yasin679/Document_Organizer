@@ -56,11 +56,42 @@ public sealed class LocalStore : IDocumentStore
         try
         {
             await using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, true))
-                await content.CopyToAsync(fs, ct);
-            File.Move(tmp, full, overwrite);
+                await content.CopyToAsync(fs, Hashing.BufferSize, ct);
+            PlaceAtomically(tmp, full, key, overwrite);
         }
         catch (IOException) when (!overwrite && File.Exists(full)) { throw new DestinationExistsException(key); }
         finally { if (File.Exists(tmp)) File.Delete(tmp); }
+    }
+
+    // One lock per destination path (striped), so two jobs writing the same file cannot both pass the "does it exist" check.
+    private static readonly object[] PathLocks = Enumerable.Range(0, 1024).Select(_ => new object()).ToArray();
+    private static readonly StringComparer PathCompare = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    /// <summary>Moves the finished temporary file to its final name. Without overwrite, an existing file is never replaced.</summary>
+    private static void PlaceAtomically(string tmp, string full, string key, bool overwrite)
+    {
+        lock (PathLocks[(PathCompare.GetHashCode(full) & int.MaxValue) % PathLocks.Length])
+        {
+            if (!overwrite && File.Exists(full)) throw new DestinationExistsException(key);
+            File.Move(tmp, full, overwrite);
+        }
+    }
+
+    /// <summary>
+    /// Removes half-written copies (".partial-xxxxxxxx") of this destination file, and of its "_dupN" variants,
+    /// left behind when the application stopped in the middle of copying it.
+    /// </summary>
+    public int DeletePartials(string key)
+    {
+        var full = Full(key);
+        var dir = Path.GetDirectoryName(full)!;
+        if (!Directory.Exists(dir)) return 0;
+        var name = Path.GetFileName(full);
+        var stem = Path.GetFileNameWithoutExtension(full); var ext = Path.GetExtension(full);
+        int n = 0;
+        foreach (var f in Directory.EnumerateFiles(dir, name + ".partial-*").Concat(Directory.EnumerateFiles(dir, stem + "_dup*" + ext + ".partial-*")))
+            try { File.Delete(f); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        return n;
     }
 
     public async Task<bool> TryServerCopyAsync(IDocumentStore source, string sourceKey, string? sourceETag, string destKey,
@@ -81,7 +112,7 @@ public sealed class LocalStore : IDocumentStore
         try
         {
             File.Copy(ls.Full(sourceKey), tmp, false);
-            File.Move(tmp, dest, overwrite);
+            PlaceAtomically(tmp, dest, destKey, overwrite);
         }
         catch (IOException) when (!overwrite && File.Exists(dest)) { throw new DestinationExistsException(destKey); }
         finally { if (File.Exists(tmp)) File.Delete(tmp); }

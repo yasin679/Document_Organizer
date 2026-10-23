@@ -12,14 +12,14 @@ It is **copy-only**: source documents are never moved, changed or deleted.
 
 ## Documentation
 
-Full guides are in [`docs/`](docs/README.md), as Markdown and PDF: [User Guide](docs/user-guide.md), [Installation and Administration](docs/installation-and-administration.md), [Quick Start](docs/quick-start.md), [FAQ and Troubleshooting](docs/faq-and-troubleshooting.md), [Technical Design](docs/technical-design.md), [UAT Test Cases](docs/uat-test-cases.md) and [Release Notes v2.0](docs/release-notes.md).
+Full guides are in [`docs/`](docs/README.md), as Markdown and PDF: [User Guide](docs/user-guide.md), [Installation and Administration](docs/installation-and-administration.md), [Quick Start](docs/quick-start.md), [FAQ and Troubleshooting](docs/faq-and-troubleshooting.md), [Technical Design](docs/technical-design.md), [UAT Test Cases](docs/uat-test-cases.md) and [Release Notes v2.1](docs/release-notes.md).
 
 ![Document Organizer dashboard](docs/images/01-dashboard.jpg)
 
 ## How it works
 
 1. **Create a job.** Choose a source and a destination: an Azure Blob container, an S3 bucket (each with an optional prefix), or a folder. Access is checked before the job is saved.
-2. **Upload the mapping file** (`.xlsx` or `.csv`). The header row and columns are detected automatically, and you can change any column mapping. See [Mapping file](#mapping-file).
+2. **Upload one or more mapping files** (`.xlsx` or `.csv`). The header row and columns are detected automatically for each file, and you can change any column mapping. A File name cell that lists several files (comma- or semicolon-separated) becomes one entry per file. See [Mapping file](#mapping-file).
 3. **Set the rules:**
    - Year source: UploadedOn, a Year column, a file-name pattern, or a path pattern.
    - Folder template, e.g. `{EmployeeCode}/{DocumentType}/{Year}/{FileName}`.
@@ -94,9 +94,9 @@ One row per document. Column names are matched automatically (common alternative
 | Record ID | No | `ID` (`RecordID`, `DocumentID`) — kept for reconciliation |
 | Employee name, Document name, Description, Module, Sub-module | No | `EmployeeName`, `Name`, `Description`, `ModuleCode`, `SubModuleCode` |
 
-A small example is in [`samples/sample-mapping.csv`](samples/sample-mapping.csv).
+A small example is in [`samples/sample-mapping.csv`](samples/sample-mapping.csv). A job can combine several mapping files (for example one export per module); each keeps its own column mapping, and the token `{MappingFile}` can put each file's documents in their own folder.
 
-Folder-template tokens: `{EmployeeCode}` `{DocumentType}` `{Year}` `{FileName}` `{ModuleCode}` `{SubModuleCode}` `{DocumentName}` `{EmployeeName}`.
+Folder-template tokens: `{EmployeeCode}` `{DocumentType}` `{Year}` `{FileName}` `{ModuleCode}` `{SubModuleCode}` `{DocumentName}` `{EmployeeName}` `{MappingFile}`.
 
 ## Storage connections
 
@@ -210,7 +210,9 @@ In the app under **Settings** (administrators): allow overwrite, parallel copies
 node tests/e2e.mjs http://localhost:5080 <admin-password> all     # local | cloud | all
 ```
 
-`cloud` runs a job for every reachable demo connection, each cloud → local folder, and Azure ↔ S3 in both directions. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the app and runs these tests against Azurite and moto on every push.
+`node tests/e2e-mapping.mjs http://localhost:5080 <admin-password>` tests mapping-file handling (several files per job, several file names in one cell, placeholders, repeated records).
+
+For `tests/e2e.mjs`, `cloud` runs a job for every reachable demo connection, each cloud → local folder, and Azure ↔ S3 in both directions. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the app and runs these tests against Azurite and moto on every push.
 
 ## Security notes
 

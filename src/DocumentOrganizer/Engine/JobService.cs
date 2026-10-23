@@ -14,6 +14,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
 
     public bool IsRunning(string jobId) => _running.ContainsKey(jobId);
     public Scanner.Progress? ScanProgress(string jobId) => _scanProgress.TryGetValue(jobId, out var p) ? p : null;
+    private readonly ConcurrentDictionary<string, CopyProgress> _copyProgress = new();
+    public CopyProgress? CopyProgressOf(string jobId) => _copyProgress.TryGetValue(jobId, out var p) ? p : null;
 
     /// <summary>After a restart, interrupted work is marked so the user can resume it.</summary>
     public void RecoverAfterRestart()
@@ -77,7 +79,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
         {
             try
             {
-                await processor.RunAsync(jobId, user, cts.Token);
+                var cp = _copyProgress[jobId] = new CopyProgress();
+                await processor.RunAsync(jobId, user, cts.Token, cp);
                 if (cts.IsCancellationRequested)
                 {
                     app.UpdateJob(jobId, ("status", JobStatus.Paused), ("message", "Paused. Resume to continue with the remaining files."));
@@ -85,7 +88,7 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                     return;
                 }
                 var c = app.CountByStatus(jobId);
-                bool exceptions = c.Where(kv => kv.Key != ItemStatus.Processed).Any(kv => kv.Value > 0);
+                bool exceptions = Exclusions.HasExceptions(c);
                 app.UpdateJob(jobId, ("status", exceptions ? JobStatus.CompletedWithExceptions : JobStatus.Completed), ("ended_at", DateTime.UtcNow.ToString("o")));
                 app.Audit("System", null, "Processing completed", jobId,
                     $"{c[ItemStatus.Processed]:N0} processed · {c[ItemStatus.Failed]:N0} failed · {c[ItemStatus.Duplicate]:N0} duplicate");
@@ -96,7 +99,7 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                 app.UpdateJob(jobId, ("status", JobStatus.Paused), ("message", "Processing stopped: " + ex.Message + " Fix the cause and resume."));
                 app.Audit("System", null, "Processing stopped", jobId, ex.Message);
             }
-            finally { _running.TryRemove(jobId, out _); app.RefreshCounts(jobId); }
+            finally { _running.TryRemove(jobId, out _); _copyProgress.TryRemove(jobId, out _); app.RefreshCounts(jobId); }
         });
     }
 
@@ -107,13 +110,13 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
     }
 
     /// <summary>Assigns an AMBIGUOUS file to one of its candidate records.</summary>
-    public (bool ok, string message) Resolve(string jobId, long itemId, string recordId, string? note, string user, string role)
+    public (bool ok, string message) Resolve(string jobId, long itemId, string recordId, string? note, string user, string role, string? mappingFile = null)
     {
         var item = app.Db.QueryOne("SELECT * FROM items WHERE id=@id AND job_id=@j", ("id", itemId), ("j", jobId));
         if (item == null) return (false, "Item not found.");
         if (item.Str("status") != ItemStatus.Ambiguous) return (false, "Only ambiguous items can be resolved.");
         var cands = JsonSerializer.Deserialize<List<Candidate>>(item.Str("candidates_json") ?? "[]", AppDb.Json) ?? new();
-        var rec = cands.FirstOrDefault(c => c.RecordId == recordId);
+        var rec = cands.FirstOrDefault(c => c.RecordId == recordId && (mappingFile == null || c.MappingFile == mappingFile)) ?? cands.FirstOrDefault(c => c.RecordId == recordId);
         if (rec == null) return (false, "That record is not one of the candidates for this file.");
         var cfg = AppDb.Cfg(app.GetJob(jobId)!.Str("config_json"));
         var f = new SourceFile { Key = item.Str("source_key")!, Size = item.Long("source_size"), ETag = item.Str("source_etag"), ContentMd5 = item.Str("source_md5"), AccessTier = item.Str("access_tier") };
@@ -125,16 +128,16 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
                 ("j", jobId), ("d", ev.DestKey), ("id", itemId));
             if (clash != null) { ev.Status = ItemStatus.Duplicate; ev.Reason = $"Destination path collision: {clash.Str("source_key")} already maps to {ev.DestKey}."; }
         }
-        var claimedBy = app.Db.QueryOne("SELECT source_key FROM items WHERE job_id=@j AND record_id=@r AND status IN ('READY','PROCESSED') AND id<>@id",
-            ("j", jobId), ("r", recordId), ("id", itemId));
+        var claimedBy = app.Db.QueryOne("SELECT source_key FROM items WHERE job_id=@j AND record_id=@r AND IFNULL(mapping_file,'')=IFNULL(@mf,'') AND status IN ('READY','PROCESSED') AND id<>@id",
+            ("j", jobId), ("r", recordId), ("mf", rec.MappingFile), ("id", itemId));
         if (claimedBy != null && ev.Status == ItemStatus.Ready) { ev.Status = ItemStatus.Duplicate; ev.Reason = $"Record {recordId} is already matched to {claimedBy.Str("source_key")}."; }
 
         app.Db.Execute(@"UPDATE items SET status=@st, reason=@reason, record_id=@rid, employee_code=@emp, employee_name=@ename, doc_type=@type, doc_name=@dname,
-            description=@desc, uploaded_on=@up, module_code=@mod, submodule_code=@sub, year=@year, dest_key=@dest,
+            description=@desc, uploaded_on=@up, module_code=@mod, submodule_code=@sub, mapping_file=@mf, year=@year, dest_key=@dest,
             resolved_by=@by, resolution_note=@note WHERE id=@id",
             ("st", ev.Status), ("reason", ev.Reason ?? $"Resolved manually to record {recordId} by {user}."), ("rid", rec.RecordId), ("emp", rec.EmployeeCode),
             ("ename", rec.EmployeeName), ("type", rec.DocumentType), ("dname", rec.DocumentName), ("desc", rec.Description), ("up", rec.UploadedOn),
-            ("mod", rec.ModuleCode), ("sub", rec.SubModuleCode), ("year", ev.Year), ("dest", ev.DestKey),
+            ("mod", rec.ModuleCode), ("sub", rec.SubModuleCode), ("mf", rec.MappingFile), ("year", ev.Year), ("dest", ev.DestKey),
             ("by", user), ("note", note), ("id", itemId));
         app.RefreshCounts(jobId);
         app.Audit(user, role, "Ambiguity resolved", jobId, $"{f.Key} assigned to record {recordId}. Result: {ev.Status}. Note: {note}");
@@ -172,6 +175,8 @@ public sealed class JobService(AppDb app, Scanner scanner, Processor processor, 
             var id = j.Str("id")!;
             app.Db.Execute("DELETE FROM items WHERE job_id=@j", ("j", id));
             app.Db.Execute("DELETE FROM jobs WHERE id=@j", ("j", id));
+            app.Db.Execute("DELETE FROM exclusions WHERE job_id=@j", ("j", id));
+            app.Db.Execute("DELETE FROM change_requests WHERE job_id=@j", ("j", id));
             try { Directory.Delete(Path.Combine(dataPath, "jobs", id), true); } catch { }
             app.Audit("System", null, "Job purged (retention)", id, $"Older than {s.JobRetentionDays} days.");
         }

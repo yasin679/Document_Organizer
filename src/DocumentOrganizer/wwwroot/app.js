@@ -5,13 +5,35 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => (n ?? 0).toLocaleString('en-IN');
 const whenShort = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+/** 75 -> "1 min 15 s", 7300 -> "2 h 2 min" */
+const dur = s => {
+  if (s == null) return '';
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d) return `${d} d ${h % 24} h`;
+  if (h) return `${h} h ${String(m % 60).padStart(2, '0')} min`;
+  return s < 600 ? `${m} min ${s % 60} s` : `${m} min`;
+};
+/** Clock time the work should finish ("21:40", or "Fri 09:15" when not today). */
+const finishAt = s => {
+  const t = new Date(Date.now() + s * 1000), today = new Date();
+  const hm = t.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return t.toDateString() === today.toDateString() ? hm : `${t.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })} ${hm}`;
+};
+const size = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : b >= 1e3 ? Math.round(b / 1e3) + ' KB' : (b || 0) + ' B';
+/** "About 12 min left (finishes around 21:40)" or "Working out the time left…" */
+const etaText = (eta, done) => eta == null ? (done ? 'Working out the time left…' : 'Starting…') : eta === 0 ? 'Finishing…' : `About <b>${dur(eta)}</b> left · finishes around <b>${finishAt(eta)}</b>`;
 const when = iso => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED'];
-const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed' };
+const STATUSES = ['READY', 'PROCESSED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED', 'EXCLUDED'];
+const LABEL = { READY: 'Ready', PROCESSED: 'Processed', UNMAPPED: 'Unmapped', MISSING: 'Missing', AMBIGUOUS: 'Ambiguous', DUPLICATE: 'Duplicate', INVALID: 'Validation errors', FAILED: 'Failed', EXCLUDED: 'Excluded' };
+const EXCLUDABLE = ['UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'FAILED'];
 const pill = s => `<span class="pill s-${esc(s)}">${esc(s)}</span>`;
-const jobPill = s => { const c = s === 'Completed' ? 'j-Completed' : s === 'Completed with exceptions' ? 'j-exceptions' : s === 'Awaiting approval' ? 'j-Awaiting' : 'j-' + (s || '').split(' ')[0]; return `<span class="pill ${c}">${esc(s)}</span>`; };
+const jobPill = (s, submittedBy) => { const c = s === 'Completed' ? 'j-Completed' : s === 'Completed with exceptions' ? 'j-exceptions' : s === 'Awaiting approval' ? 'j-Awaiting' : 'j-' + (s || '').split(' ')[0]; return `<span class="pill ${c}">${esc(s === 'Awaiting approval' && submittedBy ? 'Submitted for approval' : s)}</span>`; };
+const isMe = u => !!u && !!S.me && u.toLowerCase() === S.me.userName.toLowerCase();
+const isMakerOf = job => (job.makers || []).some(isMe);
 
-const S = { me: null, meta: null, job: null, jobStep: {}, items: { status: 'EXCEPTIONS', q: '', page: 1 }, poll: null, demo: null, draft: null, mapping: {} };
+const S = { me: null, meta: null, job: null, jobStep: {}, items: { status: 'EXCEPTIONS', q: '', page: 1, group: '' }, sel: new Set(), poll: null, demo: null, draft: null, mapping: {} };
 const canOperate = () => S.me && S.me.role !== 'Viewer';
 const isAdmin = () => S.me && S.me.role === 'Administrator';
 
@@ -94,7 +116,7 @@ async function vDashboard() {
 function jobsTable(rows) {
   if (!rows.length) return `<div class="empty">No jobs yet.</div>`;
   return `<div class="tbl-wrap"><table><thead><tr><th>Job ID</th><th>Label and source</th><th>Destination</th><th>Volume</th><th>Status</th><th>Started / ended</th><th>Operator</th></tr></thead><tbody>${
-    rows.map(j => `<tr class="click" data-href="#/job/${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="lbl-cell">${esc(j.name)}<div class="small muted src-cell" title="${esc(j.source)}">${esc(j.source)}</div></td><td class="small muted src-cell" title="${esc(j.destination)}">${esc(j.destination)}</td><td class="num">${fmt(j.volume)}</td><td>${jobPill(j.status)}</td><td class="small nowrap">${whenShort(j.startedAt || j.createdAt)}<div class="muted">${j.endedAt ? whenShort(j.endedAt) : 'not finished'}</div></td><td>${esc(j.createdBy)}</td></tr>`).join('')}</tbody></table></div>`;
+    rows.map(j => `<tr class="click" data-href="#/job/${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="lbl-cell">${esc(j.name)}<div class="small muted src-cell" title="${esc(j.source)}">${esc(j.source)}</div></td><td class="small muted src-cell" title="${esc(j.destination)}">${esc(j.destination)}</td><td class="num">${fmt(j.volume)}</td><td>${jobPill(j.status, j.submittedBy)}</td><td class="small nowrap">${whenShort(j.startedAt || j.createdAt)}<div class="muted">${j.endedAt ? whenShort(j.endedAt) : 'not finished'}</div></td><td>${esc(j.createdBy)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 async function vJobs() {
@@ -188,9 +210,11 @@ async function loadJob(keepScroll) {
   else if (step === 7) body = jobProcess(job);
   else body = await jobRecon(job);
   const actions = (isAdmin() || (job.status === 'Draft' && job.createdBy === S.me.userName)) && !job.running ? '<button class="btn sm danger" data-action="delete-job">Delete job</button>' : '';
-  $('#main').innerHTML = header(`${esc(job.id)}`, esc(job.name), `${jobPill(job.status)} ${actions}`) +
+  const locked = job.submittedBy && job.status === 'Awaiting approval'
+    ? `<div class="callout" style="margin-bottom:16px"><div><b>Submitted for approval</b> by ${esc(job.submittedBy)} on ${when(job.submittedAt)}${job.submitNote ? ` · “${esc(job.submitNote)}”` : ''}. The job cannot be changed until a different person approves or rejects it${isMe(job.submittedBy) || isAdmin() ? ', or it is withdrawn' : ''}.</div>${(isMe(job.submittedBy) || isAdmin()) && canOperate() ? '<button class="btn sm" data-action="withdraw">Withdraw</button>' : ''}</div>` : '';
+  $('#main').innerHTML = header(`${esc(job.id)}`, esc(job.name), `${jobPill(job.status, job.submittedBy)} ${actions}`) +
     `<div class="small muted" style="margin:-10px 0 14px">Source <span class="mono">${esc(job.sourceText)}</span> → Destination <span class="mono">${esc(job.destinationText)}</span></div>` +
-    stepperHtml(step, job) + (job.message ? `<div class="callout warn" style="margin-bottom:16px">${esc(job.message)}</div>` : '') + body;
+    stepperHtml(step, job) + (job.message ? `<div class="callout warn" style="margin-bottom:16px">${esc(job.message)}</div>` : '') + locked + body;
   if (keepScroll) window.scrollTo(0, y);
   const live = job.running || job.status === 'Scanning' || job.status === 'Processing';
   clearInterval(S.poll); S.poll = null;
@@ -201,45 +225,69 @@ async function loadJob(keepScroll) {
   if (prevStatus && prevStatus !== job.status) toast(`Job is now: ${job.status}`);
 }
 
+const maps = job => job.mappings || [];
+const mapSel = job => { const ms = maps(job); return ms.find(m => m.id === S.mapSel) || ms[0]; };
+function previewTable(info) {
+  return `<div class="panel tbl-wrap"><table><thead><tr>${info.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${info.preview.map(r => `<tr>${info.headers.map((_, i) => `<td class="small">${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function fileTabs(job, action) {
+  const ms = maps(job), cur = mapSel(job);
+  if (ms.length < 2) return '';
+  return `<div class="tabs" style="margin-bottom:10px">${ms.map(m => `<button class="tab ${m.id === cur.id ? 'on' : ''}" data-action="${action}" data-mid="${esc(m.id)}">${esc(m.fileName)}</button>`).join('')}</div>`;
+}
+
 function jobMapping(job) {
-  const m = job.mapping;
-  const preview = m && m.info ? `<div><div class="lbl" style="margin-bottom:8px">First rows</div><div class="panel tbl-wrap"><table><thead><tr>${m.info.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${m.info.preview.map(r => `<tr>${m.info.headers.map((_, i) => `<td class="small">${esc(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>` : '';
-  return `<div class="panel"><div class="panel-h"><h2>Mapping file</h2><span class="small muted">.xlsx or .csv · header row and columns are detected automatically</span></div><div class="panel-b">
-    ${m ? `<div class="callout ok"><div><b>${esc(m.fileName)}</b> · ${fmt(m.rows)} data rows · header on row ${m.info.headerRow + 1} · SHA-256 <span class="mono">${esc(m.sha256.slice(0, 16))}…</span></div></div>` : ''}
-    ${canOperate() ? `<div class="row-between"><div class="field" style="flex:1"><label for="mapfile">${m ? 'Replace with another file' : 'Choose the file'}</label><input type="file" id="mapfile" class="input" accept=".xlsx,.csv"></div>
-      <div style="display:flex;gap:8px;align-self:flex-end"><button class="btn primary" data-action="upload-map">Upload</button>${S.meta.demoEnabled ? '<button class="btn" data-action="demo-map">Use demo mapping file</button>' : ''}</div></div>` : ''}
-    ${preview}
-    <div class="callout"><div>Large files are read row by row. The original <span class="mono">ID</span> of every row is kept for reconciliation.</div></div>
-  </div></div><div class="foot"><a class="btn" href="#/jobs">Back to jobs</a>${m ? '<button class="btn primary" data-action="goto-step" data-step="3">Continue to column mapping</button>' : ''}</div>`;
+  const ms = maps(job), cur = mapSel(job), total = ms.reduce((a, m) => a + m.rows, 0);
+  const list = ms.length ? `<div class="tbl-wrap panel"><table><thead><tr><th>Mapping file</th><th>Data rows</th><th>Header row</th><th>SHA-256</th><th></th></tr></thead><tbody>${ms.map(m => `<tr>
+      <td><b>${esc(m.fileName)}</b></td><td class="num">${fmt(m.rows)}</td><td>${m.info.headerRow + 1}</td><td class="mono small">${esc(m.sha256.slice(0, 16))}…</td>
+      <td style="text-align:right">${canOperate() ? `<button class="btn sm" data-action="remove-map" data-mid="${esc(m.id)}">Remove</button>` : ''}</td></tr>`).join('')}
+      ${ms.length > 1 ? `<tr><td><b>Total</b></td><td class="num"><b>${fmt(total)}</b></td><td colspan="3" class="small muted">Records from all files are combined in one scan. Each record keeps its mapping file name in the reports.</td></tr>` : ''}</tbody></table></div>` : '';
+  return `<div class="panel"><div class="panel-h"><h2>Mapping files</h2><span class="small muted">.xlsx or .csv · one or more files · header row and columns are detected automatically</span></div><div class="panel-b">
+    ${list}
+    ${canOperate() ? `<div class="row-between"><div class="field" style="flex:1"><label for="mapfile">${ms.length ? 'Add more mapping files' : 'Choose the file(s)'}</label><input type="file" id="mapfile" class="input" accept=".xlsx,.csv" multiple></div>
+      <div style="display:flex;gap:8px;align-self:flex-end"><button class="btn primary" data-action="upload-map">${ms.length ? 'Add' : 'Upload'}</button>${S.meta.demoEnabled ? '<button class="btn" data-action="demo-map">Use demo mapping file</button>' : ''}</div></div>` : ''}
+    ${cur ? `<div><div class="lbl" style="margin-bottom:8px">First rows${ms.length > 1 ? '' : ''}</div>${fileTabs(job, 'map-tab')}${previewTable(cur.info)}</div>` : ''}
+    <div class="callout"><div>Large files are read row by row. The original <span class="mono">ID</span> of every row is kept for reconciliation. Upload several files at once (hold Ctrl or Shift when choosing) to process several mappings in one job.</div></div>
+  </div></div><div class="foot"><a class="btn" href="#/jobs">Back to jobs</a>${ms.length ? '<button class="btn primary" data-action="goto-step" data-step="3">Continue to column mapping</button>' : ''}</div>`;
 }
 
 function currentCfg(job) { return S.cfgEdit && S.cfgEdit.id === job.id ? S.cfgEdit.cfg : (S.cfgEdit = { id: job.id, cfg: JSON.parse(JSON.stringify(job.config)) }).cfg; }
+function colsFor(cfg, mid) { return (cfg.fileColumns && cfg.fileColumns[mid]) || cfg.columns; }
 
 function jobColumns(job) {
-  const cfg = currentCfg(job);
-  const info = job.mapping.info;
-  const required = { EmployeeCode: 1, DocumentType: 1, FileName: 1, UploadedOn: cfg.yearRule === 'UploadedOn', Year: cfg.yearRule === 'YearColumn' };
+  const cfg = currentCfg(job), cur = mapSel(job), ms = maps(job);
+  const info = cur.info, cols = colsFor(cfg, cur.id);
+  // A file without the year rule's column can use the other date column instead (files in one job can differ).
+  const required = { EmployeeCode: 1, DocumentType: 1, FileName: 1, UploadedOn: cfg.yearRule === 'UploadedOn' && !cols.year, Year: cfg.yearRule === 'YearColumn' && !cols.uploadedOn };
+  const yearNote = cfg.yearRule === 'UploadedOn' && !cols.uploadedOn && cols.year ? 'This file has no Uploaded on column, so its Year column gives the year.'
+    : cfg.yearRule === 'YearColumn' && !cols.year && cols.uploadedOn ? 'This file has no Year column, so its Uploaded on date gives the year.' : '';
   const key = f => f[0].toLowerCase() + f.slice(1);
   const sample = col => { const i = info.headers.indexOf(col); return i >= 0 && info.preview[0] ? info.preview[0][i] || '' : ''; };
   const rows = S.meta.fields.map(f => {
-    const v = cfg.columns[key(f.field)] || '';
+    const v = cols[key(f.field)] || '';
     return `<tr><td><b>${esc(f.label)}</b></td><td>${required[f.field] ? 'Required' : '<span class="muted">Optional</span>'}</td>
-      <td><select class="input" style="min-width:200px" data-col="${key(f.field)}" aria-label="Column for ${esc(f.label)}"><option value="">— Not mapped —</option>${info.headers.map(h => `<option ${h === v ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></td>
+      <td><select class="input" style="min-width:200px" data-col="${key(f.field)}" data-mid="${esc(cur.id)}" aria-label="Column for ${esc(f.label)}"><option value="">— Not mapped —</option>${info.headers.map(h => `<option ${h === v ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></td>
       <td class="mono">${esc(sample(v))}</td><td>${v ? '<span class="ok-t">✓</span>' : required[f.field] ? '<span class="bad-t">Missing</span>' : ''}</td></tr>`;
   }).join('');
-  return `<div class="panel"><div class="panel-h"><h2>Map columns to application fields</h2><span class="small muted">Detected automatically. Change any column that differs for this client.</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>Application field</th><th>Required</th><th>Column in file</th><th>Sample value</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
+  const missingIn = ms.filter(m => ['employeeCode', 'documentType', 'fileName'].some(k => !colsFor(cfg, m.id)[k])).map(m => m.fileName);
+  return `<div class="panel"><div class="panel-h"><h2>Map columns to application fields</h2><span class="small muted">Detected automatically${ms.length > 1 ? ' for each file' : ''}. Change any column that differs.</span></div>
+    ${ms.length > 1 ? `<div class="panel-b" style="padding-bottom:0">${fileTabs(job, 'col-tab')}${missingIn.length ? `<div class="callout warn"><div>Required columns still missing in: <b>${missingIn.map(esc).join(', ')}</b></div></div>` : ''}</div>` : ''}
+    ${yearNote ? `<div class="panel-b" style="padding-bottom:0"><div class="callout"><div>${esc(yearNote)}</div></div></div>` : ''}
+    <div class="tbl-wrap"><table><thead><tr><th>Application field</th><th>Required</th><th>Column in ${esc(cur.fileName)}</th><th>Sample value</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
     <div class="foot"><button class="btn" data-action="goto-step" data-step="2">Back</button><button class="btn primary" data-action="goto-step" data-step="4">Continue to rules</button></div>`;
 }
 
 function exampleDest(job, cfg) {
-  const info = job.mapping.info, p = info.preview[0] || [];
-  const col = c => { const i = info.headers.indexOf(cfg.columns[c]); return i >= 0 ? p[i] || '' : ''; };
+  const cur = maps(job)[0]; if (!cur) return '';
+  const info = cur.info, p = info.preview[0] || [], cols = colsFor(cfg, cur.id);
+  const col = c => { const i = info.headers.indexOf(cols[c]); return i >= 0 ? p[i] || '' : ''; };
   let year = '????';
-  if (cfg.yearRule === 'UploadedOn') { const m = String(col('uploadedOn')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
-  if (cfg.yearRule === 'YearColumn') { const m = String(col('year')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
-  const file = String(col('fileName')).split(/[\\/]/).pop();
-  const vals = { EmployeeCode: col('employeeCode'), DocumentType: col('documentType'), Year: year, FileName: file, ModuleCode: col('moduleCode'), SubModuleCode: col('subModuleCode'), DocumentName: col('documentName'), EmployeeName: col('employeeName') };
+  let rule = cfg.yearRule;
+  if (rule === 'UploadedOn' && !cols.uploadedOn && cols.year) rule = 'YearColumn'; else if (rule === 'YearColumn' && !cols.year && cols.uploadedOn) rule = 'UploadedOn';
+  if (rule === 'UploadedOn') { const m = String(col('uploadedOn')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
+  if (rule === 'YearColumn') { const m = String(col('year')).match(/(19|20)\d{2}/); if (m) year = m[0]; }
+  const file = String(col('fileName')).split(/[,;]/)[0].trim().split(/[\\/]/).pop();
+  const vals = { EmployeeCode: col('employeeCode'), DocumentType: col('documentType'), Year: year, FileName: file, ModuleCode: col('moduleCode'), SubModuleCode: col('subModuleCode'), DocumentName: col('documentName'), EmployeeName: col('employeeName'), MappingFile: cur.fileName.replace(/\.[^.]+$/, '') };
   return (cfg.template || '').replace(/<(\w+)>/g, '{$1}').replace(/\{(\w+)\}/g, (_, t) => vals[Object.keys(vals).find(k => k.toLowerCase() === t.toLowerCase())] ?? `{${t}}`);
 }
 
@@ -263,7 +311,11 @@ function jobRules(job) {
       <div class="small">1. Exact file name · 2. Relative path + file name, when the mapping includes a path</div>
       <label class="check"><input type="checkbox" data-cfg="caseInsensitiveMatch" ${cfg.caseInsensitiveMatch ? 'checked' : ''}><span>3. Case-insensitive file name</span></label>
       <label class="check"><input type="checkbox" data-cfg="normalizedMatch" ${cfg.normalizedMatch ? 'checked' : ''}><span>4. Normalized file name (spaces, dashes and underscores treated alike)</span></label>
-      <div class="hint">When more than one mapping record matches a file, it is marked AMBIGUOUS for a person to resolve.</div>
+      <label class="check"><input type="checkbox" data-cfg="splitMultipleFileNames" ${cfg.splitMultipleFileNames !== false ? 'checked' : ''}><span>A File name cell that lists several files (separated by commas or semicolons) becomes one entry per file, for example record ROW-12 becomes ROW-12/1 and ROW-12/2</span></label>
+    </div></div>
+    <div class="panel"><div class="panel-h"><h2>When a file matches several mapping records</h2></div><div class="panel-b" style="gap:8px">
+      ${r('ambiguousRule', 'Flag', 'Flag as ambiguous', 'Default. The file is AMBIGUOUS until a person picks the record in step 6.', cfg.ambiguousRule || 'Flag')}
+      ${r('ambiguousRule', 'KeepAll', 'Keep all', 'The file is copied once for every record that names it, each to its own destination, and each copy is its own row in the reports. Records that would land on the same path are reported as DUPLICATE.', cfg.ambiguousRule || 'Flag')}
     </div></div>
     <div class="panel"><div class="panel-h"><h2>If the destination file already exists</h2></div><div class="panel-b" style="gap:8px">
       ${r('duplicateRule', 'Skip', 'Skip and report', 'Default. Nothing is overwritten.', cfg.duplicateRule)}
@@ -286,33 +338,91 @@ function jobRules(job) {
 function jobScan(job) {
   const s = job.scan || { phase: 'Starting', done: 0, total: 0 };
   const pct = s.total ? Math.min(100, 100 * s.done / s.total) : 0;
+  const unit = /listing/i.test(s.phase) ? 'files found' : /mapping/i.test(s.phase) ? 'rows' : 'items';
+  const steps = ['Reading', 'Listing', 'Matching', 'Saving'];
+  const stepNo = Math.max(1, steps.findIndex(w => s.phase.startsWith(w)) + 1);
   return `<div class="panel"><div class="panel-h"><h2>Scanning and validating</h2><span class="pill j-Scanning">Running</span></div><div class="panel-b">
-    <div class="row-between"><b>${esc(s.phase)}</b><span class="small muted num">${fmt(s.done)}${s.total ? ' of ' + fmt(s.total) : ''}</span></div>
+    <div class="row-between"><b>Step ${stepNo} of 4: ${esc(s.phase)}</b><span class="small muted num">${fmt(s.done)}${s.total ? ' of ' + fmt(s.total) : ''} ${unit}</span></div>
     <div class="prog"><i style="width:${s.total ? pct : 8}%"></i></div>
+    <div class="row-between small"><span>${s.total ? etaText(s.etaSeconds, s.done) : 'Counting the files in the source; the time left is shown once matching starts.'}</span>
+      <span class="muted num">${s.rate ? fmt(Math.round(s.rate)) + ' ' + unit + '/s · ' : ''}this step ${dur(s.phaseElapsedSeconds)} · total ${dur(s.elapsedSeconds)}</span></div>
     <div class="small muted">Started ${when(job.scanStartedAt)}. You can leave this page; the scan continues in the background.</div>
   </div></div>`;
 }
 
+function canExclude(job) { return canOperate() && !job.running && !(job.submittedBy && job.status === 'Awaiting approval') && ['Awaiting approval', 'Paused', 'Completed', 'Completed with exceptions'].includes(job.status); }
+function itemsState() { if (!S.sel) S.sel = new Set(); return S.items; }
+function resetItems(status) { S.items = { status: status || 'EXCEPTIONS', q: '', page: 1, group: '' }; S.sel = new Set(); }
+
 async function itemsPanel(job, opts) {
-  const st = S.items;
-  const qs = new URLSearchParams({ status: st.status, q: st.q, page: st.page, pageSize: 50 });
-  const data = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/items?${qs}`);
+  const st = itemsState();
+  const qs = new URLSearchParams({ status: st.status, q: st.q, page: st.page, pageSize: 50, group: st.group || '' });
+  const jid = encodeURIComponent(job.id);
+  const showingExcluded = st.status === 'EXCLUDED';
+  const exceptionView = st.status === 'EXCEPTIONS' || EXCLUDABLE.includes(st.status);
+  const [data, reasons] = await Promise.all([
+    api('GET', `/api/jobs/${jid}/items?${qs}`),
+    exceptionView || showingExcluded ? api('GET', `/api/jobs/${jid}/reasons${showingExcluded ? '?excluded=true' : ''}`) : Promise.resolve([])]);
   const c = job.counts;
-  const tabs = [['EXCEPTIONS', 'All exceptions'], ...opts.tabs.map(s => [s, LABEL[s]]), ['ALL', 'Everything']];
+  const tabs = [['EXCEPTIONS', 'All exceptions'], ...opts.tabs.map(s => [s, LABEL[s]]), ['EXCLUDED', 'Excluded'], ['ALL', 'Everything']];
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
-  const canResolve = canOperate() && job.status === 'Awaiting approval';
+  const canResolve = canOperate() && job.status === 'Awaiting approval' && !job.submittedBy;
+  const bulk = canExclude(job) && (exceptionView || showingExcluded);
+  const selectable = it => showingExcluded ? it.status === 'EXCLUDED' : EXCLUDABLE.includes(it.status);
+  const pageIds = data.items.filter(selectable).map(it => it.id);
+  const allOnPage = pageIds.length > 0 && pageIds.every(id => S.sel.has(id));
+  const why = it => it.status === 'EXCLUDED'
+    ? `<span class="muted">Was ${esc(it.excludedFrom || '')}: ${esc(it.reason || '')}</span><br><b>Excluded</b> by ${esc(it.excludedBy || '')} · ${when(it.excludedAt)} · ${esc(it.exclusionNote || '')}`
+    : it.status === 'READY' || it.status === 'PROCESSED' ? `<span class="mono">${esc(it.destKey || '')}</span>${it.reason ? '<br><span class="muted">' + esc(it.reason) + '</span>' : ''}` : esc(it.reason || '');
   const rows = data.items.map(it => `<tr>
-      <td class="mono">${esc(it.recordId || '—')}</td>
+      ${bulk ? `<td>${selectable(it) ? `<input type="checkbox" data-sel="${it.id}" ${S.sel.has(it.id) ? 'checked' : ''} aria-label="Select item ${it.id}">` : ''}</td>` : ''}
+      <td class="mono">${esc(it.recordId || '—')}${maps(job).length > 1 && it.mappingFile ? `<div class="small muted" style="font-family:var(--f-body)">${esc(it.mappingFile)}</div>` : ''}</td>
       <td class="mono" title="${esc(it.sourceKey || '')}">${esc(it.sourceKey || it.fileName || '—')}</td>
       <td>${esc(it.employeeCode || '—')}</td><td>${esc(it.documentType || '—')}</td><td>${esc(it.year || '—')}</td>
       <td>${pill(it.status)}</td>
-      <td class="small wrap">${it.status === 'READY' || it.status === 'PROCESSED' ? `<span class="mono">${esc(it.destKey || '')}</span>${it.reason ? '<br><span class="muted">' + esc(it.reason) + '</span>' : ''}` : esc(it.reason || '')}</td>
+      <td class="small wrap">${why(it)}</td>
       <td>${it.status === 'AMBIGUOUS' && canResolve ? `<button class="btn sm" data-action="resolve" data-id="${it.id}">Resolve</button>` : ''}</td></tr>`).join('');
+  // Exceptions by reason: show one reason, or exclude (restore) a whole reason at once
+  const rel = showingExcluded ? reasons : reasons.filter(r => st.status === 'EXCEPTIONS' || r.status === st.status);
+  const reasonPanel = rel.length ? `<details class="reasons" ${S.reasonsOpen ? 'open' : ''}><summary data-action="toggle-reasons">${showingExcluded ? 'Excluded items by reason' : 'Exceptions by reason'} <span class="muted">(${rel.length})</span></summary>
+      <div class="tbl-wrap"><table><thead><tr><th>${showingExcluded ? 'Was' : 'Status'}</th><th>Reason</th><th style="text-align:right">Items</th><th></th></tr></thead><tbody>
+      ${rel.map(r => `<tr><td>${pill(r.status)}</td><td>${esc(r.group)}</td><td class="num" style="text-align:right">${fmt(r.count)}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-action="reason-show" data-group="${esc(r.group)}" data-status="${showingExcluded ? 'EXCLUDED' : esc(r.status)}">Show</button>
+        ${bulk ? `<button class="btn sm" data-action="${showingExcluded ? 'restore-reason' : 'exclude-reason'}" data-group="${esc(r.group)}" data-status="${esc(r.status)}" data-count="${r.count}">${showingExcluded ? 'Restore all' : 'Exclude all'}</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div></details>` : '';
+  const chip = st.group ? `<span class="chip">Reason: ${esc(st.group)} <button class="chip-x" data-action="clear-group" aria-label="Clear reason filter">×</button></span>` : '';
+  const verb = showingExcluded ? 'Restore' : 'Exclude';
+  const bulkBar = bulk && (data.total || S.sel.size) ? `<div class="bulkbar">
+      <span><b class="num" id="selcount">${fmt(S.sel.size)}</b> selected</span>
+      <button class="btn sm" id="selbtn" data-action="bulk-selected" ${S.sel.size ? '' : 'disabled'}>${verb} selected</button>
+      <button class="btn sm" id="selclear" data-action="clear-sel" style="${S.sel.size ? '' : 'display:none'}">Clear selection</button>
+      <span class="grow"></span>
+      ${data.total ? `<button class="btn sm ${showingExcluded ? '' : 'danger-soft'}" data-action="bulk-view" data-count="${data.total}">${verb} all ${fmt(data.total)} in this view</button>` : ''}</div>` : '';
+  const head = `<tr>${bulk ? `<th style="width:30px"><input type="checkbox" data-sel-page="1" ${allOnPage ? 'checked' : ''} ${pageIds.length ? '' : 'disabled'} aria-label="Select all on this page"></th>` : ''}<th>Record ID</th><th>Source file</th><th>Employee</th><th>Type</th><th>Year</th><th>Status</th><th>${showingExcluded ? 'Original reason / exclusion' : 'Destination / reason'}</th><th></th></tr>`;
+  S.pageIds = pageIds;
   return `<div class="panel"><div class="panel-h"><h2>${opts.title}</h2>
-      <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-action="items-tab" data-status="${k}">${l}${c[k] !== undefined ? ' ' + fmt(c[k]) : ''}</button>`).join('')}</div>
-      <input class="input" style="max-width:240px" id="itemq" placeholder="Search file, record, employee" value="${esc(st.q)}"></div>
-    ${data.items.length ? `<div class="tbl-wrap"><table><thead><tr><th>Record ID</th><th>Source file</th><th>Employee</th><th>Type</th><th>Year</th><th>Status</th><th>Destination / reason</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">Nothing to show for this filter.</div>'}
+      <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${st.status === k ? 'on' : ''}" data-action="items-tab" data-status="${k}">${l}${c[k] !== undefined ? ' ' + fmt(c[k]) : k === 'EXCEPTIONS' ? ' ' + fmt(EXCLUDABLE.reduce((a, s) => a + (c[s] || 0), 0)) : ''}</button>`).join('')}</div>
+      <input class="input" style="max-width:240px" id="itemq" placeholder="Search file, record, employee, reason" value="${esc(st.q)}"></div>
+    ${reasonPanel}${chip ? `<div class="panel-b" style="padding-bottom:0">${chip}</div>` : ''}${bulkBar}
+    ${data.items.length ? `<div class="tbl-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">Nothing to show for this filter.</div>'}
     <div class="pager"><span>${fmt(data.total)} items</span><button class="btn sm" data-action="page" data-page="${st.page - 1}" ${st.page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${st.page} of ${pages}</span><button class="btn sm" data-action="page" data-page="${st.page + 1}" ${st.page >= pages ? 'disabled' : ''}>Next</button></div></div>`;
+}
+
+/** Exclude (with a required note) or restore: ticked rows, everything in the view, or one reason. */
+function openBulk(kind, target) {
+  const restore = kind === 'restore';
+  const asRequest = S.job.makerChecker && S.job.status !== 'Awaiting approval';
+  S.bulk = { kind, target };
+  const what = target.ids ? `${fmt(target.ids.length)} selected item${target.ids.length === 1 ? '' : 's'}`
+    : `all ${fmt(target.count)} item${target.count === 1 ? '' : 's'} in ${target.group ? `reason “${esc(target.group)}”` : 'this view'}${target.status && target.status !== 'EXCEPTIONS' && target.status !== 'EXCLUDED' ? ` (${esc(LABEL[target.status])})` : ''}${target.q ? ` matching “${esc(target.q)}”` : ''}`;
+  $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="${restore ? 'Restore' : 'Exclude'} items">
+    <h2>${restore ? 'Restore' : 'Exclude'} ${what}?</h2>
+    <div class="small muted">${restore ? 'The items go back to the status they had before they were excluded. Recorded in the audit log.'
+      : 'Excluded items are not copied and no longer count as exceptions. They stay in both reports with status EXCLUDED, their original status and reason, your name, the time and this note. A new scan excludes the same items again while their status is the same. You can restore them at any time before the job is deleted.'}</div>
+    ${asRequest ? '<div class="callout"><div><b>Maker-checker is on.</b> This sends a change request. Nothing changes until a different person approves it under <b>Change requests</b>.</div></div>' : ''}
+    ${restore ? (asRequest ? '<div class="field"><label for="xnote">Why restore them? (optional)</label><input class="input" id="xnote" maxlength="500"></div>' : '') : '<div class="field"><label for="xnote">Why are these excluded? (required)</label><input class="input" id="xnote" maxlength="500" placeholder="e.g. Blank file names confirmed by client HR, not needed"></div>'}
+    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn ${restore ? 'primary' : 'danger'}" data-action="confirm-bulk">${asRequest ? 'Send request' : restore ? 'Restore' : 'Exclude'}</button></div></div></div>`;
+  const n = $('#xnote'); if (n) n.focus();
 }
 
 async function jobReview(job) {
@@ -321,23 +431,61 @@ async function jobReview(job) {
   const tree = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/tree`);
   const treeText = buildTree(tree);
   const tiles = [['Files discovered', job.discovered, null], ['Ready', c.READY, 'READY'], ['Unmapped files', c.UNMAPPED, 'UNMAPPED'], ['Missing source files', c.MISSING, 'MISSING'],
-    ['Ambiguous matches', c.AMBIGUOUS, 'AMBIGUOUS'], ['Duplicates', c.DUPLICATE, 'DUPLICATE'], ['Validation errors', c.INVALID, 'INVALID'], ['Mapping records', job.mapping.rows, null]];
+    ['Ambiguous matches', c.AMBIGUOUS, 'AMBIGUOUS'], ['Duplicates', c.DUPLICATE, 'DUPLICATE'], ['Validation errors', c.INVALID, 'INVALID'], ...(c.EXCLUDED ? [['Excluded', c.EXCLUDED, 'EXCLUDED']] : []), ['Mapping records', job.mapping.rows, null]];
   const total = fileStatuses.reduce((a, s) => a + c[s], 0) || 1;
   return `<div class="kpis">${tiles.map(([l, v, s]) => `<div class="kpi ${s ? 'click' : ''}" ${s ? `data-action="items-tab" data-status="${s}"` : ''}><div class="k">${s ? `<i class="dot c-${s}"></i>` : ''}${l}</div><div class="v">${fmt(v)}</div></div>`).join('')}</div>
     <div class="panel" style="margin-top:16px"><div class="panel-b">
       <div class="bar">${fileStatuses.filter(s => c[s]).map(s => `<span class="c-${s}" style="width:${(100 * c[s] / total).toFixed(3)}%" title="${LABEL[s]}"></span>`).join('')}</div>
-      <div class="eq">Items: <b>${fmt(c.READY)}</b> ready + ${fmt(c.UNMAPPED)} unmapped + ${fmt(c.AMBIGUOUS)} ambiguous + ${fmt(c.DUPLICATE)} duplicate + ${fmt(c.INVALID)} validation errors + ${fmt(c.MISSING)} missing. Every source file and every mapping record has a status; nothing is skipped silently.</div>
+      <div class="eq">Items: <b>${fmt(c.READY)}</b> ready + ${fmt(c.UNMAPPED)} unmapped + ${fmt(c.AMBIGUOUS)} ambiguous + ${fmt(c.DUPLICATE)} duplicate + ${fmt(c.INVALID)} validation errors + ${fmt(c.MISSING)} missing${c.EXCLUDED ? ` + ${fmt(c.EXCLUDED)} excluded` : ''}. Every source file and every mapping record has a status; nothing is skipped silently.</div>
     </div></div>
     <div style="margin-top:16px">${await itemsPanel(job, { title: 'Exceptions and results', tabs: ['READY', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID'] })}</div>
     <div class="grid g2" style="margin-top:16px">
       <div class="panel"><div class="panel-h"><h2>Proposed output structure</h2><span class="small muted">sample</span></div><div class="panel-b"><pre class="tree">${esc(treeText)}</pre></div></div>
       <div class="panel" style="align-self:start"><div class="panel-h"><h2>Approval</h2><span class="small muted">required before any copy</span></div><div class="panel-b">
-        <div class="eq">Operation <b>COPY</b> · Duplicates <b>${esc(job.config.duplicateRule)}</b><br>Year <b>${esc(job.config.yearRule)}</b> · Integrity <b>${esc(job.config.integrity)}</b><br>Destination <b>${esc(job.destinationText)}</b></div>
+        <div class="eq">Operation <b>COPY</b> · Duplicates <b>${esc(job.config.duplicateRule)}</b>${job.config.ambiguousRule === 'KeepAll' ? ' · Several records <b>Keep all</b>' : ''}<br>Year <b>${esc(job.config.yearRule)}</b> · Integrity <b>${esc(job.config.integrity)}</b><br>Destination <b>${esc(job.destinationText)}</b></div>
         <div class="row-between"><a class="btn" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=xlsx">Download validation report</a><a class="btn sm" href="/api/jobs/${encodeURIComponent(job.id)}/report?kind=validation&format=csv">CSV</a></div>
-        ${canOperate() ? `<label class="check"><input type="checkbox" id="ack"><span>I have reviewed the preview and exceptions. Copy <b class="num">${fmt(c.READY)}</b> ready files. Exceptions stay in the report and are not copied.</span></label>
-        <div><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button></div>` : '<div class="small muted">Viewers cannot approve processing.</div>'}
+        ${approvalBlock(job)}
       </div></div>
     </div>`;
+}
+
+/** Approval panel: direct approval, or maker-checker (submit → a different person approves or rejects). */
+function approvalBlock(job) {
+  const c = job.counts;
+  if (!canOperate()) return '<div class="small muted">Viewers cannot approve processing.</div>';
+  const ack = `<label class="check"><input type="checkbox" id="ack"><span>I have reviewed the preview and exceptions. Copy <b class="num">${fmt(c.READY)}</b> ready files. Exceptions stay in the report and are not copied.</span></label>`;
+  if (!job.makerChecker) return `${ack}<div><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button></div>`;
+  const people = (job.makers || []).map(esc).join(', ') || '—';
+  if (!job.submittedBy) return `<div class="callout"><div><b>Maker-checker is on.</b> Submit the job; a different operator or administrator then approves or rejects it. People who worked on this job cannot approve it: ${people}.</div></div>
+    <div class="field"><label for="subnote">Note for the approver (optional)</label><input class="input" id="subnote" maxlength="500" placeholder="e.g. 3,230 blank file names excluded as agreed with client HR"></div>
+    ${ack.replace('Copy <b', 'Ask to copy <b')}<div><button class="btn primary" data-action="submit" ${c.READY ? '' : 'disabled'}>Submit for approval</button></div>`;
+  if (isMakerOf(job)) return `<div class="small muted">You worked on this job, so a different person must approve or reject it. People who worked on it: ${people}.</div>`;
+  return `<div class="small">Prepared by <b>${people}</b>. Submitted by <b>${esc(job.submittedBy)}</b>${job.submitNote ? `: “${esc(job.submitNote)}”` : ''}. Review the exceptions and the report, then approve or reject.</div>
+    ${ack}<div style="display:flex;gap:8px"><button class="btn primary" data-action="approve" ${c.READY ? '' : 'disabled'}>Approve and start copy</button><button class="btn danger" data-action="reject">Reject…</button></div>`;
+}
+
+/** Change requests (maker-checker, after approval): exclusions and restores waiting for a second person. */
+async function requestsPanel(job) {
+  if (!job.makerChecker && !job.pendingRequests) return '';
+  const reqs = await api('GET', `/api/jobs/${encodeURIComponent(job.id)}/requests`);
+  if (!reqs.length) return '';
+  const row = q => `<tr><td class="num">${q.id}</td><td>${esc(q.summary || '')}<div class="small muted">${q.note ? '“' + esc(q.note) + '”' : ''}</div></td><td class="num">${fmt(q.count)}</td>
+    <td class="small">${esc(q.requestedBy)}<div class="muted">${when(q.requestedAt)}</div></td>
+    <td class="small">${q.status === 'Pending' ? '<span class="pill j-Awaiting">Pending</span>' : `${esc(q.status)} by ${esc(q.decidedBy || '')}<div class="muted">${esc(q.decisionNote || '')}</div>`}</td>
+    <td style="text-align:right;white-space:nowrap">${q.status !== 'Pending' || !canOperate() ? '' : isMe(q.requestedBy) ? `<button class="btn sm" data-action="req-withdraw" data-id="${q.id}">Withdraw</button>`
+      : `<button class="btn sm primary" data-action="req-approve" data-id="${q.id}">Approve</button> <button class="btn sm danger" data-action="req-reject" data-id="${q.id}">Reject…</button>`}</td></tr>`;
+  return `<div class="panel" style="margin-top:16px"><div class="panel-h"><h2>Change requests</h2><span class="small muted">maker-checker: a different person approves each request</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>#</th><th>Change</th><th>Items</th><th>Requested by</th><th>Status</th><th></th></tr></thead><tbody>${reqs.slice(0, 20).map(row).join('')}</tbody></table></div></div>`;
+}
+
+function openReason(kind, id) {
+  S.reason = { kind, id };
+  $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="Reject">
+    <h2>${kind === 'job' ? 'Reject this job?' : `Reject request ${id}?`}</h2>
+    <div class="small muted">${kind === 'job' ? 'The job goes back to the maker unchanged, with your reason shown on it. Nothing is copied.' : 'Nothing changes; the requester sees your reason.'}</div>
+    <div class="field"><label for="rjreason">Reason (required)</label><input class="input" id="rjreason" maxlength="500" placeholder="e.g. Exclude only the blank file names, not the unmapped files"></div>
+    <div class="foot"><button class="btn" data-action="close-layer">Cancel</button><button class="btn danger" data-action="confirm-reject">Reject</button></div></div></div>`;
+  $('#rjreason').focus();
 }
 
 function buildTree(t) {
@@ -359,18 +507,22 @@ function buildTree(t) {
 }
 
 function jobProcess(job) {
-  const c = job.counts, p = job.progress;
+  const c = job.counts, p = job.progress, r = job.copyResult || { processed: c.PROCESSED, skipped: c.DUPLICATE, failed: c.FAILED };
   const pct = p.total ? 100 * p.done / p.total : 0;
   const running = job.status === 'Processing';
+  const left = Math.max(0, (p.total || 0) - (p.done || 0));
   return `<div class="panel"><div class="panel-h"><h2>${running ? 'Copying documents' : job.status === 'Paused' ? 'Paused' : 'Copy finished'}</h2>${jobPill(job.status)}</div><div class="panel-b">
     <div class="row-between"><span style="font:600 30px var(--f-display)" class="num">${pct.toFixed(0)}%</span><span class="small muted num">${fmt(p.done)} of ${fmt(p.total)} files</span></div>
     <div class="prog" style="height:12px"><i style="width:${pct}%"></i></div>
-    <div class="grid g3">
-      <div><div class="lbl">Processed</div><div class="num" style="font:600 20px var(--f-display);color:var(--ok)">${fmt(c.PROCESSED)}</div></div>
-      <div><div class="lbl">Failed</div><div class="num" style="font:600 20px var(--f-display);color:var(--bad)">${fmt(c.FAILED)}</div></div>
-      <div><div class="lbl">Skipped as duplicate</div><div class="num" style="font:600 20px var(--f-display)">${fmt(c.DUPLICATE)}</div></div>
+    ${running && p.live ? `<div class="row-between small"><span>${etaText(p.etaSeconds, p.done)}</span>
+      <span class="muted num">${p.rate ? `${p.rate < 10 ? p.rate.toFixed(1) : fmt(Math.round(p.rate))} files/s · ${size(p.bytesRate)}/s · ` : ''}${p.bytesTotal ? `${size(p.bytesDone)} of ${size(p.bytesTotal)} · ` : ''}running ${dur(p.elapsedSeconds)}</span></div>` : ''}
+    <div class="grid g4">
+      <div><div class="lbl">Copied</div><div class="num" style="font:600 20px var(--f-display);color:var(--ok)">${fmt(r.processed)}</div></div>
+      <div><div class="lbl">Already at destination (skipped)</div><div class="num" style="font:600 20px var(--f-display)">${fmt(r.skipped)}</div></div>
+      <div><div class="lbl">Failed</div><div class="num" style="font:600 20px var(--f-display);color:var(--bad)">${fmt(r.failed)}</div></div>
+      <div><div class="lbl">Still to copy</div><div class="num" style="font:600 20px var(--f-display)">${fmt(left)}</div></div>
     </div>
-    <div class="small muted">Approved by ${esc(job.approvedBy || '—')} on ${when(job.approvedAt)}. Progress is saved after each batch; if the application restarts, resume continues from the remaining files.</div>
+    <div class="small muted">Approved by ${esc(job.approvedBy || '—')} on ${when(job.approvedAt)}. ${fmt(S.meta.parallelCopies || 8)} files are copied at the same time; results are saved every few seconds, and if the application restarts, resume continues from the remaining files.</div>
   </div></div>
   <div class="foot"><div style="display:flex;gap:8px">${canOperate() && running ? '<button class="btn" data-action="pause">Pause</button>' : ''}${canOperate() && job.status === 'Paused' ? '<button class="btn primary" data-action="resume">Resume</button>' : ''}
   ${canOperate() && !running && c.FAILED ? `<button class="btn" data-action="retry">Retry ${fmt(c.FAILED)} failed</button>` : ''}</div>
@@ -379,9 +531,9 @@ function jobProcess(job) {
 
 async function jobRecon(job) {
   const c = job.counts;
-  const tiles = [['Processed', 'PROCESSED'], ['Failed', 'FAILED'], ['Unmapped', 'UNMAPPED'], ['Missing', 'MISSING'], ['Ambiguous', 'AMBIGUOUS'], ['Duplicates', 'DUPLICATE'], ['Validation errors', 'INVALID']];
+  const tiles = [['Processed', 'PROCESSED'], ['Failed', 'FAILED'], ['Unmapped', 'UNMAPPED'], ['Missing', 'MISSING'], ['Ambiguous', 'AMBIGUOUS'], ['Duplicates', 'DUPLICATE'], ['Validation errors', 'INVALID'], ...(c.EXCLUDED ? [['Excluded', 'EXCLUDED']] : [])];
   const dur = job.startedAt && job.endedAt ? Math.round((new Date(job.endedAt) - new Date(job.startedAt)) / 60000) : null;
-  if (!['FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'PROCESSED', 'EXCEPTIONS', 'ALL'].includes(S.items.status)) S.items.status = 'EXCEPTIONS';
+  if (!['FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID', 'PROCESSED', 'EXCLUDED', 'EXCEPTIONS', 'ALL'].includes(S.items.status)) S.items.status = 'EXCEPTIONS';
   const base = `/api/jobs/${encodeURIComponent(job.id)}/report?kind=reconciliation`;
   return `<div class="callout ${c.FAILED ? 'warn' : 'ok'}" style="margin-bottom:16px"><div><b>Reconciliation ${c.FAILED ? 'ready, with failed files to retry' : 'complete'}.</b> Every source file and mapping record has a final status. The source was not modified.</div></div>
     <div class="kpis">${tiles.map(([l, s]) => `<div class="kpi click" data-action="items-tab" data-status="${s}"><div class="k"><i class="dot c-${s}"></i>${l}</div><div class="v">${fmt(c[s])}</div></div>`).join('')}<div class="kpi"><div class="k">Duration</div><div class="v">${dur === null ? '—' : dur < 60 ? dur + ' min' : Math.floor(dur / 60) + 'h ' + (dur % 60) + 'm'}</div></div></div>
@@ -390,6 +542,7 @@ async function jobRecon(job) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">${canOperate() && c.FAILED ? `<button class="btn" data-action="retry">Retry ${fmt(c.FAILED)} failed</button>` : ''}
         <a class="btn" href="${base}&format=csv">Reconciliation CSV</a><a class="btn primary" href="${base}&format=xlsx">Reconciliation Excel</a></div>
     </div></div>
+    ${await requestsPanel(job)}
     <div style="margin-top:16px">${await itemsPanel(job, { title: 'Results', tabs: ['PROCESSED', 'FAILED', 'UNMAPPED', 'MISSING', 'AMBIGUOUS', 'DUPLICATE', 'INVALID'] })}</div>
     <div class="foot"><a class="btn" href="#/audit">View audit log</a><a class="btn" href="#/dashboard">Back to dashboard</a></div>`;
 }
@@ -408,17 +561,17 @@ function renderResolve() {
     <div><div class="eyebrow">Ambiguous match</div><h1 style="font-size:20px">Which record owns this file?</h1></div>
     <div class="path">${esc(it.sourceKey)}</div>
     <div class="callout warn"><div>${it.candidates.length} mapping records name this file. The system will not choose one. Pick the correct record, or leave it flagged so it stays in the exception report.</div></div>
-    ${it.candidates.map(c => `<label class="cand ${pick === c.recordId ? 'on' : ''}"><input type="radio" name="cand" value="${esc(c.recordId)}" ${pick === c.recordId ? 'checked' : ''}><dl>
-      <dt>Record ID</dt><dd class="mono">${esc(c.recordId)}</dd><dt>EmployeeCode</dt><dd>${esc(c.employeeCode || '—')}</dd><dt>Employee name</dt><dd>${esc(c.employeeName || '—')}</dd>
+    ${it.candidates.map((c, i) => `<label class="cand ${pick === String(i) ? 'on' : ''}"><input type="radio" name="cand" value="${i}" ${pick === String(i) ? 'checked' : ''}><dl>
+      <dt>Record ID</dt><dd class="mono">${esc(c.recordId)}</dd>${c.mappingFile ? `<dt>Mapping file</dt><dd>${esc(c.mappingFile)}</dd>` : ''}<dt>EmployeeCode</dt><dd>${esc(c.employeeCode || '—')}</dd><dt>Employee name</dt><dd>${esc(c.employeeName || '—')}</dd>
       <dt>Type</dt><dd>${esc(c.documentType || '—')}</dd><dt>Document name</dt><dd>${esc(c.documentName || '—')}</dd><dt>UploadedOn</dt><dd>${esc(c.uploadedOn || '—')}</dd></dl></label>`).join('')}
     <div class="field"><label for="note">Resolution note (saved to the audit log)</label><input class="input" id="note" placeholder="e.g. Confirmed with client HR by email"></div>
-    <div class="foot" style="margin-top:auto"><button class="btn" data-action="close-layer">Leave flagged</button><button class="btn primary" data-action="do-resolve" ${pick ? '' : 'disabled'}>Assign to record ${esc(pick || '')}</button></div>
+    <div class="foot" style="margin-top:auto"><button class="btn" data-action="close-layer">Leave flagged</button><button class="btn primary" data-action="do-resolve" ${pick ? '' : 'disabled'}>Assign to record ${esc(pick ? it.candidates[+pick].recordId : '')}</button></div>
   </div></div>`;
 }
 function openApprove() {
   const c = S.job.counts;
   $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="Confirm approval">
-    <h2 style="font:600 19px var(--f-display)">Start copying ${fmt(c.READY)} files?</h2>
+    <h2 style="font:600 19px var(--f-display)">Start copying ${fmt(c.READY)} file${c.READY === 1 ? '' : 's'}?</h2>
     <div class="small muted">Files are copied to <span class="mono">${esc(S.job.destinationText)}</span> in batches of ${fmt(S.job.config.batchSize)}${S.job.config.integrity !== 'None' ? ' with ' + esc(S.job.config.integrity) + ' verification' : ''}. The source is not modified. Your approval is recorded in the audit log.</div>
     <div class="foot" style="margin-top:4px"><button class="btn" data-action="close-layer">Cancel</button><button class="btn primary" data-action="confirm-approve">Approve and start</button></div>
   </div></div>`;
@@ -454,6 +607,7 @@ async function vSettings() {
       <div class="panel"><div class="panel-h"><h2>Processing permissions</h2></div><div class="panel-b" style="gap:0">
         <div class="toggle"><div><b>Operation</b><div class="small muted">COPY only. Move and delete are not available in this version.</div></div><span class="pill s-READY">COPY</span></div>
         ${sw('allowOverwrite', 'Allow overwrite on duplicate', 'Lets operators choose Overwrite when the destination file exists.')}
+        ${sw('requireSecondApprover', 'Maker-checker (second approver)', 'The person who prepares a job cannot approve it. They submit it, and a different operator or administrator approves or rejects it. Exclusions and restores after approval also need a second person.')}
         ${num('maxParallelCopies', 'Parallel copies', 'Files copied at the same time (1–64). Lower it if storage throttles.', 1, 64)}
       </div></div>
       <div class="panel"><div class="panel-h"><h2>Retention and security</h2></div><div class="panel-b" style="gap:0">
@@ -505,10 +659,22 @@ document.addEventListener('keyup', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.col && S.job) { currentCfg(S.job).columns[t.dataset.col] = t.value || null; loadJob(true); }
-  if (t.name === 'yearRule' || t.name === 'duplicateRule') { currentCfg(S.job)[t.name] = t.value; loadJob(true); }
+  if (t.dataset.col && S.job) {
+    const cfg = currentCfg(S.job), mid = t.dataset.mid, first = (maps(S.job)[0] || {}).id;
+    cfg.fileColumns = cfg.fileColumns || {};
+    if (mid) { cfg.fileColumns[mid] = Object.assign({}, colsFor(cfg, mid), { [t.dataset.col]: t.value || null }); if (mid === first) cfg.columns = cfg.fileColumns[mid]; }
+    else cfg.columns[t.dataset.col] = t.value || null;
+    loadJob(true);
+  }
+  if (t.name === 'yearRule' || t.name === 'duplicateRule' || t.name === 'ambiguousRule') { currentCfg(S.job)[t.name] = t.value; loadJob(true); }
   if (t.dataset.bind && t.tagName === 'SELECT' && S.draft) { setPath(S.draft, t.dataset.bind, t.value); $('#main').innerHTML = vNew(); }
   if (t.name === 'cand' && S.resolve) { S.resolve.pick = t.value; renderResolve(); }
+  if (t.dataset.sel || t.dataset.selPage) {
+    if (t.dataset.sel) { const id = +t.dataset.sel; t.checked ? S.sel.add(id) : S.sel.delete(id); }
+    else { (S.pageIds || []).forEach(id => t.checked ? S.sel.add(id) : S.sel.delete(id)); document.querySelectorAll('[data-sel]').forEach(b => { b.checked = t.checked; }); }
+    const all = $('[data-sel-page]'); if (all) all.checked = (S.pageIds || []).length > 0 && S.pageIds.every(id => S.sel.has(id));
+    $('#selcount').textContent = fmt(S.sel.size); $('#selbtn').disabled = !S.sel.size; $('#selclear').style.display = S.sel.size ? '' : 'none';
+  }
   if (t.dataset.userRole) guard(async () => { await api('PUT', `/api/users/${encodeURIComponent(t.dataset.userRole)}`, { role: t.value }); toast('Role changed.'); });
 });
 
@@ -548,14 +714,21 @@ document.addEventListener('click', e => {
       const r = await api('POST', '/api/jobs', S.draft);
       toast(`Job ${r.id} created.`); S.draft = null; S.jobStep[r.id] = 2; location.hash = `#/job/${r.id}`;
     }, el),
-    'goto-step': () => { S.jobStep[S.job.id] = +el.dataset.step; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; loadJob(); window.scrollTo(0, 0); },
+    'goto-step': () => { S.jobStep[S.job.id] = +el.dataset.step; resetItems(); loadJob(); window.scrollTo(0, 0); },
     'upload-map': () => guard(async () => {
-      const f = $('#mapfile').files[0]; if (!f) throw new Error('Choose a file first.');
-      const fd = new FormData(); fd.append('file', f);
-      toast('Uploading and reading the file…');
-      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mapping`, fd);
-      S.cfgEdit = null; toast(`Read ${fmt(r.rows)} rows. Columns detected.`); S.jobStep[S.job.id] = 3; await loadJob();
+      const fs = [...$('#mapfile').files]; if (!fs.length) throw new Error('Choose a file first.');
+      const fd = new FormData(); fs.forEach(f => fd.append('files', f));
+      toast(fs.length > 1 ? `Uploading and reading ${fs.length} files…` : 'Uploading and reading the file…');
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mappings`, fd);
+      S.cfgEdit = null; S.mapSel = null;
+      S.jobStep[S.job.id] = 2; toast(`${r.files.length} mapping file${r.files.length > 1 ? 's' : ''} · ${fmt(r.rows)} rows in total. Columns detected.`); await loadJob();
     }, el),
+    'remove-map': () => guard(async () => {
+      await api('DELETE', `/api/jobs/${encodeURIComponent(S.job.id)}/mappings/${encodeURIComponent(el.dataset.mid)}`);
+      S.cfgEdit = null; S.mapSel = null; toast('Mapping file removed.'); await loadJob();
+    }, el),
+    'map-tab': () => { S.mapSel = el.dataset.mid; loadJob(true); },
+    'col-tab': () => { S.mapSel = el.dataset.mid; loadJob(true); },
     'demo-map': () => guard(async () => {
       const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/mapping/demo`);
       S.cfgEdit = null; toast(`Read ${fmt(r.rows)} rows. Columns detected.`); S.jobStep[S.job.id] = 3; await loadJob();
@@ -563,19 +736,50 @@ document.addEventListener('click', e => {
     'save-scan': () => guard(async () => {
       await api('PUT', `/api/jobs/${encodeURIComponent(S.job.id)}/config`, currentCfg(S.job));
       await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/scan`);
-      S.cfgEdit = null; S.jobStep[S.job.id] = null; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; await loadJob();
+      S.cfgEdit = null; S.jobStep[S.job.id] = null; resetItems(); await loadJob();
     }, el),
-    'items-tab': () => { S.items.status = el.dataset.status; S.items.page = 1; loadJob(true); },
+    'items-tab': () => { resetItems(el.dataset.status); S.items.q = ($('#itemq') || {}).value || ''; loadJob(true); },
+    'reason-show': () => { resetItems(el.dataset.status); S.items.group = el.dataset.group; loadJob(true); },
+    'clear-group': () => { S.items.group = ''; S.items.page = 1; S.sel = new Set(); loadJob(true); },
+    'toggle-reasons': () => { S.reasonsOpen = !el.parentElement.open; },
+    'clear-sel': () => { S.sel = new Set(); loadJob(true); },
+    'bulk-selected': () => openBulk(S.items.status === 'EXCLUDED' ? 'restore' : 'exclude', { ids: [...S.sel] }),
+    'bulk-view': () => openBulk(S.items.status === 'EXCLUDED' ? 'restore' : 'exclude', { status: S.items.status, q: S.items.q, group: S.items.group, count: +el.dataset.count }),
+    'exclude-reason': () => openBulk('exclude', { status: el.dataset.status, group: el.dataset.group, count: +el.dataset.count }),
+    'restore-reason': () => openBulk('restore', { status: 'EXCLUDED', group: el.dataset.group, count: +el.dataset.count }),
+    'confirm-bulk': () => guard(async () => {
+      const { kind, target } = S.bulk, note = ($('#xnote') || {}).value || '';
+      const body = target.ids ? { ids: target.ids, note } : { allInView: true, status: target.status, q: target.q || '', group: target.group || '', note };
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${kind}`, body);
+      $('#layer').innerHTML = ''; S.bulk = null; S.sel = new Set(); S.items.page = 1;
+      if (kind === 'exclude' && target.group && !target.ids) S.items.group = '';
+      toast(r.message); await loadJob(true);
+    }, el),
     'page': () => { S.items.page = +el.dataset.page; loadJob(true); },
     'resolve': () => guard(() => openResolve(+el.dataset.id), el),
     'do-resolve': () => guard(async () => {
-      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${S.resolve.it.id}/resolve`, { recordId: S.resolve.pick, note: $('#note').value });
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/items/${S.resolve.it.id}/resolve`, { recordId: S.resolve.it.candidates[+S.resolve.pick].recordId, mappingFile: S.resolve.it.candidates[+S.resolve.pick].mappingFile, note: $('#note').value });
       $('#layer').innerHTML = ''; S.resolve = null; toast(r.message); await loadJob(true);
     }, el),
     'approve': () => { if (!$('#ack').checked) return toast('Tick the confirmation box first.', true); openApprove(); },
+    'submit': () => guard(async () => {
+      if (!$('#ack').checked) throw new Error('Tick the confirmation box first.');
+      const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/submit`, { note: $('#subnote').value });
+      toast(r.message); await loadJob(true);
+    }, el),
+    'withdraw': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/withdraw`); toast(r.message); await loadJob(true); }, el),
+    'reject': () => openReason('job'),
+    'req-reject': () => openReason('req', +el.dataset.id),
+    'confirm-reject': () => guard(async () => {
+      const { kind, id } = S.reason, note = $('#rjreason').value;
+      const r = await api('POST', kind === 'job' ? `/api/jobs/${encodeURIComponent(S.job.id)}/reject` : `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${id}/reject`, { note });
+      $('#layer').innerHTML = ''; S.reason = null; toast(r.message); await loadJob(true);
+    }, el),
+    'req-approve': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/approve`); toast(r.message); await loadJob(true); }, el),
+    'req-withdraw': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/reject`, { note: '' }); toast(r.message); await loadJob(true); }, el),
     'confirm-approve': () => guard(async () => {
-      await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true });
-      $('#layer').innerHTML = ''; S.items = { status: 'EXCEPTIONS', q: '', page: 1 }; await loadJob(); window.scrollTo(0, 0);
+      await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true, version: S.job.version });
+      $('#layer').innerHTML = ''; resetItems(); await loadJob(); window.scrollTo(0, 0);
     }, el),
     'pause': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/pause`); toast(r.message); }, el),
     'resume': () => guard(async () => { await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/resume`); await loadJob(); }, el),
@@ -619,6 +823,7 @@ window.addEventListener('hashchange', route);
     S.me = await api('GET', '/api/auth/me');
     S.meta = await api('GET', '/api/meta');
   } catch { return; }
+  const ver = $('#ver'); if (ver) ver.textContent = `Version ${S.meta.version}`;
   if (!location.hash) location.hash = '#/dashboard';
   route();
 })();

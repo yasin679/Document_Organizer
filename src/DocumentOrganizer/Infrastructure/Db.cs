@@ -43,6 +43,70 @@ public sealed class AppDb
             FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)");
         Db.Execute("CREATE INDEX IF NOT EXISTS ix_items_job_status ON items(job_id, status)");
         Db.Execute("CREATE INDEX IF NOT EXISTS ix_items_job_dest ON items(job_id, dest_key)");
+        // v2.1: several mapping files per job; each item remembers which mapping file its record came from
+        AddColumnIfMissing("jobs", "mappings_json", "TEXT");
+        AddColumnIfMissing("items", "mapping_file", "TEXT");
+        // v2.1: exceptions set aside by a person (EXCLUDED), with the status they had and why
+        AddColumnIfMissing("items", "excluded_from", "TEXT");
+        AddColumnIfMissing("items", "excluded_by", "TEXT");
+        AddColumnIfMissing("items", "excluded_at", "TEXT");
+        AddColumnIfMissing("items", "exclusion_note", "TEXT");
+        // Server-side sessions, so logout and password changes end sessions immediately
+        Db.Execute("CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, user_name TEXT NOT NULL COLLATE NOCASE, created_at TEXT NOT NULL)");
+        Db.Execute("DELETE FROM sessions WHERE created_at < @c", ("c", DateTime.UtcNow.AddDays(-30).ToString("o")));
+        // Maker-checker: who worked on the job, who submitted it for approval, and change requests after approval
+        AddColumnIfMissing("jobs", "makers_json", "TEXT");
+        AddColumnIfMissing("jobs", "submitted_by", "TEXT");
+        AddColumnIfMissing("jobs", "submitted_at", "TEXT");
+        AddColumnIfMissing("jobs", "submit_note", "TEXT");
+        Db.Execute(@"CREATE TABLE IF NOT EXISTS change_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, kind TEXT NOT NULL,
+            item_ids_json TEXT NOT NULL, item_count INTEGER NOT NULL, summary TEXT, note TEXT, requested_by TEXT NOT NULL, requested_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Pending', decided_by TEXT, decided_at TEXT, decision_note TEXT)");
+        Db.Execute("CREATE INDEX IF NOT EXISTS ix_change_requests_job ON change_requests(job_id, status)");
+        // Exclusions are remembered per job, so a new scan sets the same items aside again (same file or record, same status)
+        Db.Execute(@"CREATE TABLE IF NOT EXISTS exclusions(job_id TEXT NOT NULL, item_key TEXT NOT NULL, from_status TEXT NOT NULL,
+            note TEXT, by_user TEXT, at TEXT, PRIMARY KEY(job_id, item_key))");
+    }
+
+    private void AddColumnIfMissing(string table, string column, string type)
+    {
+        var cols = Db.Query($"PRAGMA table_info({table})").Select(r => r.Str("name")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!cols.Contains(column)) Db.Execute($"ALTER TABLE {table} ADD COLUMN {column} {type}");
+    }
+
+    // ---------- mapping files ----------
+    /// <summary>The job's mapping files. Jobs created before v2.1 have one file stored in the mapping_* columns.</summary>
+    public static List<MappingSource> Mappings(Row job)
+    {
+        if (job.Str("mappings_json") is string mj && mj.Length > 2)
+            return JsonSerializer.Deserialize<List<MappingSource>>(mj, Json) ?? new();
+        if (job.Str("mapping_file") is not string path) return new();
+        var info = job.Str("mapping_info_json") is string ij ? JsonSerializer.Deserialize<JsonElement>(ij, Json) : default;
+        var m = new MappingSource
+        {
+            Id = "m1", Path = path, OriginalName = job.Str("mapping_original_name") ?? Path.GetFileName(path),
+            Rows = (int)job.Long("mapping_rows"), Sha256 = job.Str("mapping_sha256") ?? ""
+        };
+        if (info.ValueKind == JsonValueKind.Object)
+        {
+            if (info.TryGetProperty("headerRow", out var hr)) m.HeaderRow = hr.GetInt32();
+            if (info.TryGetProperty("headers", out var h)) m.Headers = h.Deserialize<string[]>(Json) ?? Array.Empty<string>();
+            if (info.TryGetProperty("preview", out var pv)) m.Preview = pv.Deserialize<List<string[]>>(Json) ?? new();
+        }
+        return new() { m };
+    }
+
+    /// <summary>Stores the mapping files and keeps the summary columns (first file, total rows) up to date.</summary>
+    public void SaveMappings(string jobId, List<MappingSource> list)
+    {
+        var first = list.FirstOrDefault();
+        UpdateJob(jobId,
+            ("mappings_json", list.Count == 0 ? null : ToJson(list)),
+            ("mapping_file", first?.Path),
+            ("mapping_original_name", list.Count == 0 ? null : string.Join(", ", list.Select(m => m.OriginalName))),
+            ("mapping_rows", list.Sum(m => (long)m.Rows)),
+            ("mapping_sha256", first?.Sha256),
+            ("mapping_info_json", first == null ? null : ToJson(new { headerRow = first.HeaderRow, headers = first.Headers, preview = first.Preview, dataRows = first.Rows })));
     }
 
     // ---------- settings ----------
@@ -67,9 +131,10 @@ public sealed class AppDb
     public string NextJobId()
     {
         var prefix = "JOB-" + DateTime.Now.ToString("yyyyMMdd") + "-";
-        var max = Db.Scalar("SELECT MAX(id) FROM jobs WHERE id LIKE @p", ("p", prefix + "%")) as string;
+        // Highest number used today (compared as a number, so JOB-…-10000 follows JOB-…-9999)
         int n = 1;
-        if (max != null && int.TryParse(max[prefix.Length..], out var last)) n = last + 1;
+        foreach (var r in Db.Query("SELECT id FROM jobs WHERE id LIKE @p", ("p", prefix + "%")))
+            if (int.TryParse(r.Str("id")![prefix.Length..], out var last) && last >= n) n = last + 1;
         return prefix + n.ToString("0000");
     }
 
@@ -81,6 +146,9 @@ public sealed class AppDb
 
     public void UpdateJob(string id, params (string col, object? val)[] cols)
     {
+        // A job that goes back to Draft or starts scanning is no longer the version that was submitted for approval
+        if (cols.Any(c => c.col == "status" && c.val is string s && (s == JobStatus.Draft || s == JobStatus.Scanning)) && cols.All(c => c.col != "submitted_by"))
+            cols = cols.Concat(new (string, object?)[] { ("submitted_by", null), ("submitted_at", null), ("submit_note", null) }).ToArray();
         var set = string.Join(",", cols.Select(c => $"{c.col}=@{c.col}"));
         var args = cols.Select(c => (c.col, c.val)).Append(("id", (object?)id)).ToArray();
         Db.Execute($"UPDATE jobs SET {set} WHERE id=@id", args);
@@ -97,7 +165,7 @@ public sealed class AppDb
     public void RefreshCounts(string jobId)
     {
         var c = CountByStatus(jobId);
-        var discovered = Convert.ToInt64(Db.Scalar("SELECT COUNT(*) FROM items WHERE job_id=@j AND source_key IS NOT NULL", ("j", jobId)) ?? 0L);
+        var discovered = Convert.ToInt64(Db.Scalar("SELECT COUNT(DISTINCT source_key) FROM items WHERE job_id=@j AND source_key IS NOT NULL", ("j", jobId)) ?? 0L);
         UpdateJob(jobId, ("counts_json", ToJson(c)), ("discovered", discovered));
     }
 }
@@ -111,4 +179,6 @@ public sealed class AppSettings
     public bool LocalSourceEnabled { get; set; } = true;
     public bool AzureBlobEnabled { get; set; } = true;
     public bool S3Enabled { get; set; } = true;
+    /// <summary>Maker-checker: a person who did not prepare a job must approve it (and approve later exclusions).</summary>
+    public bool RequireSecondApprover { get; set; } = false;
 }

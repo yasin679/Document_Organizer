@@ -31,6 +31,30 @@ No. Documents go only from the source you choose to the destination you choose. 
 
 One row per document with at least an employee code, a document type and a file name, plus an upload date or a year. Column names are matched automatically and can be changed in step 3. See `samples/sample-mapping.csv` in the repository.
 
+**Can I use more than one mapping file in a job?**
+
+Yes. In step 2, choose several files at once or add more later. Their records are combined in one scan. Each file has its own column mapping in step 3, so files with different column names can be mixed. Every record keeps the name of its mapping file in the reports, and the folder template token `{MappingFile}` can keep each file's documents in their own folder. Files can also differ in column order, extra columns, title rows, CSV delimiter, file type (`.xlsx` and `.csv` together) and date column (a file with only a Year column is fine).
+
+### Can a second person approve each job (maker-checker)?
+
+Yes. An administrator turns on **Maker-checker (second approver)** in Settings. The person who prepares a job then submits it, and a different operator or administrator approves or rejects it. After approval, excluding or restoring items needs a second person too. See User Guide section 10.6.
+
+### Copying is slow, or the numbers jump by 250 at a time
+
+Earlier builds saved results every 250 files, so on slow drives the screen could stand still for a minute and then jump. Results are now saved every two seconds, and step 7 shows the speed and the time left. The copy itself runs several files at once (**Parallel copies**, 8 by default). If it is still slow, the drives are usually the limit: see *Copying faster* in User Guide section 11 (parallel copies to suit the drive, a different destination drive, antivirus exclusions).
+
+### One file is named by several records. Can it go to each of them?
+
+Yes. In step 4, under **When a file matches several mapping records**, choose **Keep all** and scan. The file is copied once per record, each to its own destination, and each copy is its own row in the reconciliation report. With the default **Flag as ambiguous**, the file waits for a person to choose one record.
+
+### Can I get rid of thousands of exceptions at once?
+
+Yes, by excluding them (User Guide section 10.3). Tick rows, use **Exclude all N in this view** on any tab or search, or exclude a whole reason from **Exceptions by reason** (for example all *Blank file name* errors). A note is required. Excluded items are not copied, stay in the reports with status EXCLUDED and the note, are excluded again after a new scan, and can be restored. Nothing is deleted.
+
+**A File name cell lists several files separated by commas. Is that supported?**
+
+Yes. Each name becomes its own entry: record `ROW-68` with `a.pdf,b.pdf` becomes `ROW-68/1` (`a.pdf`) and `ROW-68/2` (`b.pdf`), each with its own status. Semicolons work the same way. A cell that is exactly the name of a source file (a real file name containing a comma) is never split. The option is under step 4 and is on by default.
+
 **Who can do what?**
 
 Viewers can see everything and download reports. Operators can also create and run jobs. Administrators can also change settings and manage users.
@@ -67,7 +91,11 @@ Two or more mapping records name the same file, for example `offer_letter.pdf` f
 
 **The Missing count is very large. Are files lost?**
 
-Usually not. A large Missing count most often means the source prefix, bucket or folder was too narrow, so the scan did not see where those files are. Check the source location before reporting anything to the client.
+Usually not. A large Missing count most often means the source prefix, bucket or folder was too narrow, so the scan did not see where those files are. Check the source location before reporting anything to the client. In version 2.0 and earlier, File name cells listing several files and cells containing `NULL` were also counted as missing; version 2.1 splits the first and reports the second as INVALID (blank file name).
+
+**Why is a repeated record MISSING and not DUPLICATE?**
+
+A repeated record (same file, employee and type as an earlier record) is DUPLICATE only when the earlier record found its file, because then the file is copied once. When the file is not in the source, both records are MISSING, and the reason of the second names the first, so the Missing count matches the records that need follow-up.
 
 **Can I run two jobs at the same time?**
 
@@ -101,9 +129,15 @@ No. There is no screen or API to change the audit log.
 | "SQLite library not found" (Linux) | The SQLite system library is missing | Install `libsqlite3-0` (Debian/Ubuntu) or `sqlite-libs` (RHEL/Fedora), or use the Docker image |
 | Browser shows "This site can't be reached" | The application is not running, or the console window was closed | Start it again and keep it running |
 | "address already in use" for port 5080 | Another copy is already running | Stop the other copy, or change `Urls` |
-| Admin password not accepted | Password was not set at start, or was shorter than 8 characters | Start again with `DOCORG_ADMIN_PASSWORD` set (or type it at the `start.cmd` prompt) |
+| Admin password not accepted | Password was not set at start, was shorter than 8 characters, or was changed in the application | Start again with `DOCORG_ADMIN_PASSWORD` set to a **new** value (or type it at the `start.cmd` prompt). The same value as last time is not applied again; the console says so |
 | No temporary password appears | A password already exists in the database | Set a new one with `DOCORG_ADMIN_PASSWORD` at start-up |
-| "The account is locked for 10 minutes" | 5 wrong passwords | Wait 10 minutes, or ask an administrator to reset the password |
+| "Sign-in from this computer is blocked for 10 minutes" | 5 wrong passwords from this computer | Wait 10 minutes, or ask an administrator to reset the password |
+| "The job has changed since you opened it" | Someone rescanned, resubmitted or changed exceptions after you opened the page | Reload the page, review again, then approve |
+| "The folder template uses {EmployeeName}, but no column is mapped to Employee name" | A template token has no column | Map the column in step 3 for every mapping file, or remove the token |
+| "This job is busy with another change" | Someone else's change to the same job took longer than a minute | Try again in a moment |
+| "Mapping record …: ModuleCode is blank, but the folder template uses {ModuleCode}" | A template token has no value for this record | Fill the value in the mapping file, or remove the token from the template in step 4 |
+| "Source folder cannot be inside the destination folder" | Copies could be written into the source | Choose a destination outside the source, for example a sibling folder |
+| "… cannot be used as a folder name (it is only dots or spaces)" | An employee code or type such as `.` or `..` | Correct the value in the mapping file and scan again |
 | Signed out unexpectedly | 30 minutes without activity | Sign in again. Running jobs are not affected. |
 | Signed out at once behind a load balancer, or every audit entry shows the proxy's address | Reverse proxy headers not trusted | Set `DocumentOrganizer__BehindReverseProxy=true` |
 
@@ -149,7 +183,19 @@ No. There is no screen or API to change the audit log.
 |---|---|---|
 | "No header row found in the file" or "could not be read as Excel" | The file has no column names in its first 20 rows, or is not a real `.xlsx`/`.csv` | Export the file again without changes |
 | Required field shows **Missing** in column mapping | The column has a different name in this file | Pick the right column from the list |
-| Almost everything UNMAPPED | Wrong mapping file for this source, or the File name column is mapped wrongly | Check the file and the File name mapping |
+| Almost everything UNMAPPED | Wrong mapping file for this source, the File name column is mapped wrongly, or the source also holds documents from other modules | Check the file and the File name mapping; add the other modules' exports as extra mapping files |
+| Many MISSING whose file name contains commas | Version 2.0 or earlier, or **Several file names in one cell** turned off | Use version 2.1 with the option on (step 4), then scan again |
+| A new feature described in the guides is not on the screen | An older copy of the application is still running on port 5080 (another window, or an older folder), so the browser shows that one | Look at **Version** at the bottom of the side bar. Close every Document Organizer window (or end `dotnet` in Task Manager), start `start.cmd` from the new folder, then reload the page (Ctrl+F5). `start.cmd` now warns when port 5080 is already in use. |
+| Accented file names (`é`, `ü`) MISSING although the files exist | Version 2.0 or earlier read every CSV as UTF-8, so a CSV saved by Excel on Windows lost accented characters | Use version 2.1 and scan again |
+| "… has the same content as …, which is already added" | The same mapping file was uploaded twice | Nothing to do; the first copy is kept |
+| "Maker-checker is on: submit the job for approval first" | Maker-checker is on, so a job cannot be approved directly | Click **Submit for approval**; a different person approves |
+| "You prepared or changed this job, so a different person must approve or reject it" | You are one of the job's makers | Ask an operator or administrator who did not work on the job |
+| "This job was submitted for approval by … It cannot be changed" | The job is waiting for a checker | The submitter (or an administrator) clicks **Withdraw**, or the checker rejects it |
+| "Request sent: … will be excluded when a different person approves it" | Maker-checker is on and the job is already approved | A different person approves it under **Change requests** |
+| "Enter a note saying why these items are excluded" | Exclude was clicked without a note | Type the reason; it goes into the reports and the audit log |
+| "Exceptions can be excluded after a scan…" | The job is a draft, scanning or copying | Wait for the scan to finish, or pause the copy |
+| Excluded items came back after a scan | Their status changed (for example a missing file arrived, so the record is READY) | Nothing; exclusions only re-apply when the status is the same |
+| Scan refused: "Column … is required" naming one of several files | That file's columns were not recognised | Step 3, click the file's name, map its columns |
 | Almost everything MISSING | Source prefix, bucket or folder is wrong | Check the source location in step 1 |
 | Almost everything DUPLICATE | Destination already holds an earlier copy | Use a new destination prefix, or the Compare hash rule |
 | Many INVALID "year could not be determined" | UploadedOn is blank or not a date | Use the Year column or a file-name pattern in step 4 |

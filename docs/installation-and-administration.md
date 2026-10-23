@@ -149,7 +149,7 @@ The image listens on port 8080, runs as a non-root user and keeps its database i
 > [!TIP]
 > **Forgotten admin password**
 >
-> Stop the application and start it again with `DOCORG_ADMIN_PASSWORD` set to a new password (on Windows, `start.cmd` asks for it). The password is applied at start-up, the `admin` account is re-enabled, and the change is written to the audit log. Remove the variable afterwards on shared servers.
+> Stop the application and start it again with `DOCORG_ADMIN_PASSWORD` set to a new password (on Windows, `start.cmd` asks for it). The password is applied at start-up, the `admin` account is re-enabled, the admin's existing sessions are signed out, and the change is written to the audit log. It is applied only when the value is new: restarting with the same value changes nothing, so a password the admin later changes in the application is not undone. Remove the variable afterwards on shared servers.
 
 ## 4 Configuration
 
@@ -317,7 +317,8 @@ Administrators change these under **Settings**. Every change is written to the a
 | Amazon S3 | On | Allows S3 sources and destinations |
 | Local or network folders | On | Allows folder sources and destinations |
 | Allow overwrite on duplicate | Off | Makes the Overwrite duplicate rule available to operators |
-| Parallel copies | 8 | Files copied at the same time (1 to 64). Lower it if storage reports throttling (HTTP 503 or `SlowDown`). |
+| Maker-checker (second approver) | Off | A person who did not prepare a job must approve it; exclusions and restores after approval need a second person too. Turn it on when audit requires four-eyes control; you need at least two operators or administrators. |
+| Parallel copies | 8 | Files copied at the same time (1 to 64). Raise it to 16 to 32 for SSD, NVMe, network shares and cloud storage; lower it to 2 to 4 for a single external hard disk, and if storage reports throttling (HTTP 503 or `SlowDown`). |
 | Keep jobs and reports | 365 days | Older jobs, their items and mapping files are removed at start-up |
 | Keep audit log | 7 years | Audit events are kept at least this long (minimum 365 days) |
 
@@ -336,12 +337,12 @@ To add a user:
 3. Click **Add user**. Send the initial password to the user through a secure channel.
 4. The user signs in and changes it under **Settings > My password**.
 
-To remove access, click **Disable**. The user's history stays in the audit log. To reset a forgotten password, click **Reset password** and type a new password for the user. A locked account unlocks by itself after 10 minutes.
+To remove access, click **Disable**. The user's history stays in the audit log. To reset a forgotten password, click **Reset password** and type a new password for the user. Sign-in blocked after wrong passwords unblocks by itself after 10 minutes. Resetting a password signs that user out everywhere.
 
 > [!NOTE]
 > **Sign-in protection**
 >
-> Passwords are stored as PBKDF2-SHA256 hashes with 210,000 iterations. After 5 wrong passwords, the account is locked for 10 minutes.
+> Passwords are stored as PBKDF2-SHA256 hashes with 210,000 iterations. After 5 wrong passwords from one computer, sign-in for that user from that computer is blocked for 10 minutes (others are not affected). Signing out, changing or resetting a password ends the sessions on the server immediately.
 
 ## 6 Testing with emulators
 
@@ -417,6 +418,11 @@ The database holds every job, item and audit event. It does not hold any documen
 4. Start the application. The database is upgraded automatically.
 5. Read the Release Notes (DO-RN-07) for configuration changes.
 
+> [!NOTE]
+> **Upgrading from version 2.0 to 2.1**
+>
+> No configuration changes. New database columns are added automatically at start-up; existing jobs keep working with their single mapping file. File name cells listing several files are now split (one entry per file) and `NULL`-style placeholders are treated as empty, so scanning an old job again can change its counts. See the Release Notes.
+
 > [!IMPORTANT]
 > **Upgrading from version 1.0**
 >
@@ -430,7 +436,9 @@ The end-to-end test runs the full flow against a running application:
 node tests/e2e.mjs http://localhost:5080 <admin-password> all
 ```
 
-`local` tests only folders; `cloud` runs a job for every reachable demo connection, each cloud source to a local folder, and Azure to S3 and back; `all` does both. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the application and runs these tests against Azurite and moto on every push.
+`node tests/e2e-mapping.mjs http://localhost:5080 <admin-password>` checks mapping-file handling: several files per job, several file names in one cell, placeholders and repeated records.
+
+For `tests/e2e.mjs`, `local` tests only folders; `cloud` runs a job for every reachable demo connection, each cloud source to a local folder, and Azure to S3 and back; `all` does both. The GitHub Actions workflow in `.github/workflows/ci.yml` builds the application and runs these tests against Azurite and moto on every push.
 
 ## 11 Go-live checklist
 

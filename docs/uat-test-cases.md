@@ -12,7 +12,7 @@ landscape: true
 
 ### 1.1 Purpose
 
-These test cases confirm that Document Organizer v2.0 works on your own machines, in your own hosting, and against your own Azure and AWS accounts before it is used with real documents. They cover every screen, every status, all three storage types, copying between providers, security controls and recovery after interruption.
+These test cases confirm that Document Organizer v2.1 works on your own machines, in your own hosting, and against your own Azure and AWS accounts before it is used with real documents. They cover every screen, every status, all three storage types, copying between providers, security controls and recovery after interruption.
 
 ### 1.2 How to use this document
 
@@ -26,7 +26,7 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | Item | Value |
 |---|---|
 | Machine | The machine or hosting platform you will use in production |
-| Application | Document Organizer v2.0, for example http://localhost:5080 or your HTTPS address |
+| Application | Document Organizer v2.1, for example http://localhost:5080 or your HTTPS address |
 | Users | `admin` (Administrator), `uat.operator` (Operator), `uat.viewer` (Viewer) |
 | Local data | Demo data (Dashboard > **Load demo data**) |
 | Azure test account | A non-production storage account with containers `uat-source` and `uat-organized` |
@@ -92,6 +92,11 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | UAT-23 | M | Auto column mapping | Continue to step 3 | All required fields mapped with a tick; sample values look right | |
 | UAT-24 | H | Change a column | Set Document type to another column, then back | Sample value changes; required field shows **Missing** when unmapped | |
 | UAT-25 | M | Your own mapping file | Upload a real export from your source system (or `samples/sample-mapping.csv`) in a separate draft job | Header row and columns detected; required fields mapped or easy to map | |
+| UAT-25a | M | Several mapping files | In a draft job, select two exports at once (for example HR documents and payroll) and **Upload** | Both listed with their rows and fingerprints, plus a Total row | |
+| UAT-25b | H | Different column names | Use a second file whose columns are named differently (for example `EmpCode`, `StoredFileName`); open step 3 and click its name | Each file has its own column mapping; required fields mapped for both | |
+| UAT-25d | H | Different structure | Add an `.xlsx` with title rows above the header and extra columns, plus a semicolon `.csv` that has a Year column but no Uploaded on column | Both read; header row found below the titles; step 3 shows the note that the Year column gives the year | |
+| UAT-25e | H | Same file twice | Upload a mapping file that is already in the job | Refused with "… has the same content as …"; list unchanged | |
+| UAT-25c | H | Remove and add | **Remove** one file, then add it again with **Add more mapping files** | List updates; after a scan, changing the files clears the results | |
 
 ## 6 Rules and scan
 
@@ -102,6 +107,12 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | UAT-28 | M | Reference example path | Search tab **Everything** for `e00879_final` | Destination `E00879/Medical Certificate/2021/e00879_final_certificate.pdf` | |
 | UAT-29 | H | Template example | In step 4, change template to `{DocumentType}/{EmployeeCode}/{FileName}` | Example path updates; revert before saving | |
 | UAT-30 | H | Unknown token | Enter template `{Employee}/{FileName}` and save | Error naming the unknown token | |
+| UAT-30a | M | Several files in one cell | Use a mapping file where one File name cell lists two existing files separated by a comma (for example `a.pdf,b.pdf`); scan | Two entries `ROW-n/1` and `ROW-n/2`, both READY; both copied | |
+| UAT-30b | M | Placeholder file name | Put `NULL` in a File name cell; scan | That record is INVALID "Blank FileName", not MISSING | |
+| UAT-30c | M | Repeat of a missing record | Two identical rows (same file, employee, type) naming a file that is not in the source; scan | Both MISSING; the second names the first; neither is DUPLICATE | |
+| UAT-30d | H | `{MappingFile}` token | With two mapping files, template `{MappingFile}/{EmployeeCode}/{FileName}` | Example path and destinations start with the mapping file name | |
+| UAT-30e | H | Keep all | Use a mapping file where two records (different employees) name the same file; in step 4 choose **Keep all**; scan, approve | No AMBIGUOUS; one READY item per record with its own destination; after copying the file is at both destinations; the reconciliation report has a row for each | |
+| UAT-30f | H | Keep all, same path | As UAT-30e with template `{FileName}` | One copy READY, the other DUPLICATE "Destination path collision" | |
 | UAT-31 | M | Overwrite needs admin | As operator, open duplicate rule options | Overwrite is greyed out with "Not permitted by the administrator" unless an admin enabled it | |
 
 ## 7 Review, resolve and approve
@@ -112,6 +123,20 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 | UAT-33 | M | Validation report | Download validation report (Excel and CSV) | Files open; one row per item; summary sheet present | |
 | UAT-34 | M | Resolve ambiguous | Ambiguous tab > **Resolve** on one file, choose a record, add a note, **Assign** | Item becomes READY (459 ready); audit shows the resolution with the note | |
 | UAT-35 | H | Leave flagged | Resolve the other ambiguous file, click **Leave flagged** | Item stays AMBIGUOUS | |
+| UAT-35a | M | Exclude ticked rows | All exceptions tab: tick two rows, **Exclude selected**, enter a note | Both EXCLUDED; counts update; Excluded tab shows original status, user, time and note | |
+| UAT-35b | M | Exclude a whole reason | Open **Exceptions by reason**, **Exclude all** on one reason, enter a note | Every item of that reason EXCLUDED; the reason disappears from the list | |
+| UAT-35c | H | Exclude everything in a view | Unmapped tab, search for part of a name, **Exclude all N in this view** | Only the items shown are excluded | |
+| UAT-35d | H | Note required | Try to exclude without a note | Refused with a message; nothing changes | |
+| UAT-35e | H | Kept after a new scan | Go back to step 4 and scan again | The same items are EXCLUDED again | |
+| UAT-35f | M | Restore | Excluded tab: **Restore all N in this view** | Items return to their original status | |
+| UAT-35g | H | Viewer | Sign in as a viewer | Excluded tab visible; no tick boxes or exclude buttons | |
+| UAT-35h | M | Maker-checker on | As admin, Settings: tick **Maker-checker (second approver)**, save | Saved; audit shows the change | |
+| UAT-35i | M | Submit | As operator A, prepare and scan a job, tick the confirmation, **Submit for approval** | Job shows *Submitted for approval*; A sees no Approve button | |
+| UAT-35j | H | Locked while submitted | As A or B, try to change rules, mapping, exclusions or resolve | Refused with *submitted for approval* | |
+| UAT-35k | M | Reject | As operator B, **Reject…** with a reason | Job back to A with the reason shown | |
+| UAT-35l | M | Approve by a second person | A submits again; B approves | Copy starts; audit names B as checker and A as maker | |
+| UAT-35m | H | Checker who changed the job | B excludes an item, A submits, B tries to approve | Refused: B worked on the job | |
+| UAT-35n | M | Change request | After copying, A excludes items | Request pending; nothing changes until B approves under **Change requests** | |
 | UAT-36 | M | Approval needs confirmation | Click **Approve and start copy** without ticking the checkbox | Message "Tick the confirmation box first"; nothing starts | |
 | UAT-37 | M | Approve | Tick, approve, confirm | Status Processing; audit shows Processing approved with user and time | |
 
@@ -119,6 +144,9 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 
 | ID | Pri | Test | Steps | Expected result | P/F |
 |---|---|---|---|---|---|
+| UAT-37a | M | Time left while scanning | Scan a job with a large mapping file or source | Step 5 shows *Step n of 4*, the time left for steps with a known total, the speed and the time taken | |
+| UAT-37b | M | Time left while copying | Approve a job with many files and watch step 7 | After a few seconds: time left with a finishing time, files/s and MB/s; counts move every few seconds | |
+| UAT-37c | H | Copy counts | Copy into a destination that already holds some of the files (rule Skip) | *Already at destination (skipped)* counts only those files; *Copied* + skipped + failed + still to copy = total | |
 | UAT-38 | M | Copy completes | Wait for the job to finish | Completed with exceptions; 459 processed, 0 failed | |
 | UAT-39 | M | Source untouched | Compare the demo source folder before and after | Same file count, names and dates | |
 | UAT-40 | M | Output structure | Open the destination folder | `EmployeeCode/DocumentType/Year/FileName` folders as previewed | |
@@ -131,8 +159,10 @@ These test cases confirm that Document Organizer v2.0 works on your own machines
 
 | ID | Pri | Test | Steps | Expected result | P/F |
 |---|---|---|---|---|---|
-| UAT-45 | M | Reconciliation report | Step 8 > **Reconciliation Excel** | Summary and item sheets; every item has status, reason, paths, hashes, times | |
+| UAT-45 | M | Reconciliation report | Step 8 > **Reconciliation Excel** | Summary lists every mapping file; item sheet has status, reason, mapping file, paths, hashes, times | |
 | UAT-46 | M | Integrity evidence | In the report, check the hash columns for processed items | Source and destination hashes equal | |
+| UAT-46a | M | Exclusions in the report | Exclude one exception, download the reconciliation report | Row has status EXCLUDED and the last four columns filled (original status, by, at, note) | |
+| UAT-46b | H | Close a completed job | On a job Completed with exceptions, exclude all remaining exceptions | Job becomes Completed | |
 | UAT-47 | M | Audit trail | Audit log, search by Job ID | Creation, mapping upload, rules, scan, resolution, approval, processing and export all listed | |
 
 ## 10 Cloud storage

@@ -14,8 +14,10 @@ public static class Roles
 public static class ItemStatus
 {
     public const string Ready = "READY", Processed = "PROCESSED", Unmapped = "UNMAPPED", Missing = "MISSING",
-        Ambiguous = "AMBIGUOUS", Duplicate = "DUPLICATE", Failed = "FAILED", Invalid = "INVALID";
-    public static readonly string[] All = { Ready, Processed, Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed };
+        Ambiguous = "AMBIGUOUS", Duplicate = "DUPLICATE", Failed = "FAILED", Invalid = "INVALID", Excluded = "EXCLUDED";
+    public static readonly string[] All = { Ready, Processed, Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed, Excluded };
+    /// <summary>Exceptions a person can exclude (set aside with a note). EXCLUDED items are not copied and not counted as exceptions.</summary>
+    public static readonly string[] Excludable = { Unmapped, Missing, Ambiguous, Duplicate, Invalid, Failed };
 }
 
 public static class JobStatus
@@ -75,6 +77,15 @@ public sealed class JobConfig
     public bool CaseInsensitiveMatch { get; set; } = true;
     public bool NormalizedMatch { get; set; } = true;
     public bool KeepBlobMetadata { get; set; } = true;
+    /// <summary>A File name cell that lists several files (separated by commas or semicolons) becomes one entry per file.</summary>
+    public bool SplitMultipleFileNames { get; set; } = true;
+    /// <summary>When one file matches several mapping records: Flag (AMBIGUOUS, a person decides) | KeepAll (one copy per record).</summary>
+    public string AmbiguousRule { get; set; } = "Flag";
+    /// <summary>Column mapping per uploaded mapping file (key = mapping file ID). Falls back to <see cref="Columns"/>.</summary>
+    public Dictionary<string, ColumnMap>? FileColumns { get; set; }
+
+    public ColumnMap ColumnsFor(string mappingId) =>
+        FileColumns != null && FileColumns.TryGetValue(mappingId, out var m) ? m : Columns;
 }
 
 public sealed class Candidate
@@ -90,7 +101,36 @@ public sealed class Candidate
     public string? ModuleCode { get; set; }
     public string? SubModuleCode { get; set; }
     public string? Year { get; set; }
+    /// <summary>Name of the mapping file this record came from.</summary>
+    public string? MappingFile { get; set; }
     [JsonIgnore] public int RowNumber { get; set; }
+    /// <summary>Unique within one scan; record IDs can repeat across (or even within) mapping files.</summary>
+    [JsonIgnore] public int Seq { get; set; }
+    /// <summary>The record's mapping file has an Uploaded on column / a Year column (files in one job can differ).</summary>
+    public bool HasUploadedOnColumn { get; set; } = true;
+    public bool HasYearColumn { get; set; } = true;
+
+    public Candidate CloneWithFile(string fileName, string recordId) => new()
+    {
+        RecordId = recordId, EmployeeCode = EmployeeCode, EmployeeName = EmployeeName, DocumentType = DocumentType, DocumentName = DocumentName,
+        Description = Description, UploadedOn = UploadedOn, FileName = fileName, ModuleCode = ModuleCode, SubModuleCode = SubModuleCode,
+        Year = Year, MappingFile = MappingFile, RowNumber = RowNumber, HasUploadedOnColumn = HasUploadedOnColumn, HasYearColumn = HasYearColumn
+    };
+}
+
+/// <summary>One uploaded mapping file of a job. A job can have several; their records are combined.</summary>
+public sealed class MappingSource
+{
+    public string Id { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string OriginalName { get; set; } = "";
+    public int Rows { get; set; }
+    public string Sha256 { get; set; } = "";
+    public int HeaderRow { get; set; }
+    public string[] Headers { get; set; } = Array.Empty<string>();
+    public List<string[]> Preview { get; set; } = new();
+    public string? UploadedBy { get; set; }
+    public string? UploadedAt { get; set; }
 }
 
 public sealed class SourceFile
