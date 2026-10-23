@@ -43,25 +43,38 @@ public static class Endpoints
     public static void MapOrganizerApi(this WebApplication app)
     {
         var api = app.MapGroup("/api");
+        // Changes to one job are handled one at a time (submit, approve, upload, scan, exclude, ...), so a check such as
+        // "not submitted" or "awaiting approval" cannot be overtaken by another request between the check and the change.
+        api.AddEndpointFilter(async (fctx, next) =>
+        {
+            var http = fctx.HttpContext;
+            if (HttpMethods.IsGet(http.Request.Method) || !http.Request.Path.StartsWithSegments("/api/jobs")
+                || http.Request.RouteValues["id"] is not string jobId) return await next(fctx);
+            var gate = JobGates.GetOrAdd(jobId, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(http.RequestAborted);
+            try { return await next(fctx); }
+            finally { gate.Release(); }
+        });
 
         // ---------------- auth ----------------
         api.MapPost("/auth/login", async (HttpContext ctx, LoginBody body, UserStore users, AppDb db) =>
         {
-            var (u, err) = users.Authenticate(body.UserName ?? "", body.Password ?? "");
+            var (u, err) = users.Authenticate(body.UserName ?? "", body.Password ?? "", Ip(ctx));
             if (u == null)
             {
                 db.Audit(body.UserName, null, "Login failed", null, err, Ip(ctx));
                 return Results.Json(new { error = err }, statusCode: 401);
             }
-            var claims = new List<Claim> { new(ClaimTypes.Name, u.Str("user_name")!), new(ClaimTypes.Role, u.Str("role")!), new("display", u.Str("display_name") ?? "") };
+            var claims = new List<Claim> { new(ClaimTypes.Name, u.Str("user_name")!), new(ClaimTypes.Role, u.Str("role")!), new("display", u.Str("display_name") ?? ""),
+                new("sid", users.StartSession(u.Str("user_name")!)) };
             await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, "cookie")));
             db.Audit(u.Str("user_name"), u.Str("role"), "Login", null, null, Ip(ctx));
             return Results.Ok(new { userName = u.Str("user_name"), role = u.Str("role") });
         });
 
-        api.MapPost("/auth/logout", async (HttpContext ctx, AppDb db) =>
+        api.MapPost("/auth/logout", async (HttpContext ctx, AppDb db, UserStore users) =>
         {
-            if (ctx.User.Identity?.IsAuthenticated == true) { var (u, r) = Who(ctx); db.Audit(u, r, "Logout", null, null, Ip(ctx)); }
+            if (ctx.User.Identity?.IsAuthenticated == true) { var (u, r) = Who(ctx); users.EndSession(ctx.User.FindFirstValue("sid")); db.Audit(u, r, "Logout", null, null, Ip(ctx)); }
             await ctx.SignOutAsync();
             return Results.Ok();
         });
@@ -72,14 +85,17 @@ public static class Endpoints
             return Results.Ok(new { userName = u, role = r, displayName = ctx.User.FindFirstValue("display"), sessionTimeoutMinutes = opt.SessionTimeoutMinutes });
         }).RequireAuthorization("View");
 
-        api.MapPost("/account/password", (HttpContext ctx, PasswordBody body, UserStore users, AppDb db) =>
+        api.MapPost("/account/password", async (HttpContext ctx, PasswordBody body, UserStore users, AppDb db) =>
         {
             var (u, r) = Who(ctx);
             var row = users.Get(u)!;
             if (!Passwords.Verify(body.CurrentPassword ?? "", row.Str("password_hash")!)) throw new ApiError("Current password is incorrect.");
             if (Passwords.Weakness(body.NewPassword) is string w) throw new ApiError(w);
-            users.SetPassword(u, body.NewPassword!);
-            db.Audit(u, r, "Password changed", null, null, Ip(ctx));
+            users.SetPassword(u, body.NewPassword!);   // ends every session of this user, on every computer
+            // keep this browser signed in with a new session
+            var claims = ctx.User.Claims.Where(c => c.Type != "sid").Append(new Claim("sid", users.StartSession(u))).ToList();
+            await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, "cookie")));
+            db.Audit(u, r, "Password changed", null, "Other sessions of this user were signed out.", Ip(ctx));
             return Results.Ok(new { message = "Password changed." });
         }).RequireAuthorization("View");
 
@@ -147,10 +163,16 @@ public static class Endpoints
                 var a = Path.GetFullPath(body.Source.Path!).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 var b = Path.GetFullPath(body.Destination.Path!).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 if (b.StartsWith(a, StringComparison.OrdinalIgnoreCase)) throw new ApiError("Destination folder cannot be inside the source folder.");
+                if (a.StartsWith(b, StringComparison.OrdinalIgnoreCase)) throw new ApiError("Source folder cannot be inside the destination folder (copies could be written into the source).");
             }
             if (body.Source.Type != "Local" && body.Source.Type == body.Destination.Type && body.Source.Connection == body.Destination.Connection
-                && body.Source.Container == body.Destination.Container && (body.Destination.Prefix ?? "").StartsWith(body.Source.Prefix ?? "\u0000"))
-                throw new ApiError("Destination prefix cannot be inside the source prefix.");
+                && string.Equals(body.Source.Container, body.Destination.Container, StringComparison.Ordinal))
+            {
+                static string P(string? s) { s = (s ?? "").Trim('/'); return s.Length == 0 ? "" : s + "/"; }
+                string sp = P(body.Source.Prefix), dp = P(body.Destination.Prefix);
+                if (dp.StartsWith(sp)) throw new ApiError("Destination prefix cannot be inside the source prefix.");
+                if (sp.StartsWith(dp)) throw new ApiError("Source prefix cannot be inside the destination prefix (copies could be written into the source).");
+            }
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct); cts.CancelAfter(TimeSpan.FromSeconds(90));
             string srcMsg, dstMsg;
             try { srcMsg = await src.TestAsync(false, cts.Token); } catch (Exception ex) { throw new ApiError("Source check failed: " + ex.Message); }
@@ -387,6 +409,8 @@ public static class Endpoints
             if (j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("Only a validated job awaiting approval can be approved.");
             if (js.IsRunning(id)) throw new ApiError("The job is running.");
             if (!body.Acknowledge) throw new ApiError("Confirm that you have reviewed the preview and exceptions.");
+            if (!string.IsNullOrEmpty(body.Version) && body.Version != JobVersion(j))
+                throw new ApiError("The job has changed since you opened it (it was rescanned, resubmitted or its exceptions changed). Reload the page, review it again, then approve.", 409);
             var c = db.CountByStatus(id);
             if (c[ItemStatus.Ready] == 0) throw new ApiError("There are no files ready for processing.");
             bool fourEyes = db.LoadSettings().RequireSecondApprover;
@@ -462,9 +486,13 @@ public static class Endpoints
             var ids = JsonSerializer.Deserialize<long[]>(req.Str("item_ids_json")!) ?? Array.Empty<long>();
             var by = req.Str("requested_by")!;
             var note = $"{req.Str("note")} (approved by {u})";
-            var (n, stat) = req.Str("kind") == "exclude" ? ex.Exclude(id, ids, null, note, by) : ex.Restore(id, ids, null);
-            db.Db.Execute("UPDATE change_requests SET status='Approved', decided_by=@u, decided_at=@t, decision_note=@n WHERE id=@id",
-                ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("n", $"{n:N0} items changed"), ("id", rid));
+            // Claim the request first: only one decision can win
+            if (db.Db.Execute("UPDATE change_requests SET status='Approved', decided_by=@u, decided_at=@t WHERE id=@id AND status='Pending'",
+                ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("id", rid)) == 0) throw new ApiError("This request has just been decided by someone else.");
+            int n; Dictionary<string, int> stat;
+            try { (n, stat) = req.Str("kind") == "exclude" ? ex.Exclude(id, ids, null, note, by) : ex.Restore(id, ids, null); }
+            catch { db.Db.Execute("UPDATE change_requests SET status='Pending', decided_by=NULL, decided_at=NULL WHERE id=@id", ("id", rid)); throw; }
+            db.Db.Execute("UPDATE change_requests SET decision_note=@n WHERE id=@id", ("n", $"{n:N0} items changed"), ("id", rid));
             db.Audit(u, r, req.Str("kind") == "exclude" ? "Exclusion request approved" : "Restore request approved", id,
                 $"Request {rid} by {by}: {n:N0} items ({Describe(stat)}) · Note: {req.Str("note")}", Ip(ctx));
             return Results.Ok(new { count = n, message = $"Approved. {n:N0} item{(n == 1 ? "" : "s")} {(req.Str("kind") == "exclude" ? "excluded" : "restored")}." });
@@ -478,8 +506,9 @@ public static class Endpoints
             bool own = string.Equals(req.Str("requested_by"), u, StringComparison.OrdinalIgnoreCase);
             var reason = (body.Note ?? "").Trim();
             if (!own && reason.Length < 3) throw new ApiError("Enter the reason for rejecting.");
-            db.Db.Execute("UPDATE change_requests SET status=@s, decided_by=@u, decided_at=@t, decision_note=@n WHERE id=@id",
-                ("s", own ? "Withdrawn" : "Rejected"), ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("n", own ? "Withdrawn by the requester" : reason), ("id", rid));
+            if (db.Db.Execute("UPDATE change_requests SET status=@s, decided_by=@u, decided_at=@t, decision_note=@n WHERE id=@id AND status='Pending'",
+                ("s", own ? "Withdrawn" : "Rejected"), ("u", u), ("t", DateTime.UtcNow.ToString("o")), ("n", own ? "Withdrawn by the requester" : reason), ("id", rid)) == 0)
+                throw new ApiError("This request has just been decided by someone else.");
             db.Audit(u, r, own ? "Change request withdrawn" : "Change request rejected", id, $"Request {rid} by {req.Str("requested_by")}{(own ? "" : " · Reason: " + reason)}", Ip(ctx));
             return Results.Ok(new { message = own ? "Request withdrawn." : "Request rejected." });
         }).RequireAuthorization("Operate");
@@ -544,10 +573,19 @@ public static class Endpoints
         api.MapGet("/settings", (AppDb db, OrganizerOptions opt) => Results.Ok(new { settings = db.LoadSettings(), sessionTimeoutMinutes = opt.SessionTimeoutMinutes, allowedLocalRoots = opt.AllowedLocalRoots }))
             .RequireAuthorization("View");
 
-        api.MapPut("/settings", (HttpContext ctx, AppSettings s, AppDb db) =>
+        api.MapPut("/settings", (HttpContext ctx, Dictionary<string, JsonElement> body, AppDb db) =>
         {
             var (u, r) = Who(ctx);
             var before = db.LoadSettings();
+            // Only the settings that are sent change; the others keep their current value
+            var s = db.LoadSettings();
+            foreach (var (k, v) in body)
+            {
+                var prop = typeof(AppSettings).GetProperties().FirstOrDefault(pp => pp.Name.Equals(k, StringComparison.OrdinalIgnoreCase));
+                if (prop == null) continue;
+                try { prop.SetValue(s, v.Deserialize(prop.PropertyType, AppDb.Json)); }
+                catch (Exception) { throw new ApiError($"Setting {k} has an invalid value."); }
+            }
             s.MaxParallelCopies = Math.Clamp(s.MaxParallelCopies, 1, 64);
             s.JobRetentionDays = Math.Clamp(s.JobRetentionDays, 30, 3650);
             s.AuditRetentionDays = Math.Clamp(s.AuditRetentionDays, 365, 3650);
@@ -792,7 +830,7 @@ public static class Endpoints
             approvedBy = j.Str("approved_by"), approvedAt = j.Str("approved_at"), startedAt = j.Str("started_at"), endedAt = j.Str("ended_at"),
             progress, scan,
             copyResult = new { processed = run.GetValueOrDefault(ItemStatus.Processed), skipped = run.GetValueOrDefault(ItemStatus.Duplicate), failed = run.GetValueOrDefault(ItemStatus.Failed) },
-            running = js.IsRunning(id), discovered = j.Long("discovered"),
+            running = js.IsRunning(id), discovered = j.Long("discovered"), version = JobVersion(j),
             makerChecker = db.LoadSettings().RequireSecondApprover, makers = FourEyes.Makers(j),
             submittedBy = j.Str("submitted_by"), submittedAt = j.Str("submitted_at"), submitNote = j.Str("submit_note"),
             pendingRequests = Convert.ToInt64(db.Db.Scalar("SELECT COUNT(*) FROM change_requests WHERE job_id=@j AND status='Pending'", ("j", id)) ?? 0L),
@@ -807,6 +845,15 @@ public static class Endpoints
     /// <summary>The application version (from the project file), shown in the side bar so people can see which build is running.</summary>
     public static readonly string AppVersion = typeof(Endpoints).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> JobGates = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Changes whenever what an approver reviews changes (scan, counts after resolve or exclude, submission).
+    /// The approve call can send it back, so an approval from a page opened before a change is refused.
+    /// </summary>
+    public static string JobVersion(Row j) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+        System.Text.Encoding.UTF8.GetBytes($"{j.Str("scan_ended_at")}|{j.Str("submitted_at")}|{j.Str("counts_json")}|{j.Str("config_json")}|{j.Str("mappings_json")}")))[..16];
+
     public sealed record NoteBody(string? Note);
 
     /// <summary>With maker-checker on, a job that has been approved (copying, paused or finished) is changed only through a request.</summary>
@@ -816,6 +863,12 @@ public static class Endpoints
     {
         var (sel, by) = ex.Preview(jobId, ids, filter, kind == "restore");
         if (sel.Length == 0) throw new ApiError(kind == "exclude" ? "None of the chosen items can be excluded (only exceptions can)." : "None of the chosen items are excluded.");
+        var chosen = sel.ToHashSet();
+        foreach (var p in db.Db.Query("SELECT id, item_ids_json FROM change_requests WHERE job_id=@j AND kind=@k AND status='Pending'", ("j", jobId), ("k", kind)))
+        {
+            var overlap = (JsonSerializer.Deserialize<long[]>(p.Str("item_ids_json")!) ?? Array.Empty<long>()).Count(chosen.Contains);
+            if (overlap > 0) throw new ApiError($"{overlap:N0} of these items are already in pending request {p.Long("id")}. Wait for it to be decided, or withdraw it.");
+        }
         if (note.Length > 500) note = note[..500];
         var summary = (kind == "exclude" ? "Exclude " : "Restore ") + Describe(by) + DescribeFilter(filter);
         var rid = db.Db.Insert(@"INSERT INTO change_requests(job_id,kind,item_ids_json,item_count,summary,note,requested_by,requested_at) VALUES(@j,@k,@ids,@n,@s,@note,@u,@t)",
@@ -858,6 +911,6 @@ public static class Endpoints
         $" · all in view: {f.Status}{(string.IsNullOrWhiteSpace(f.Group) ? "" : ", reason " + f.Group)}{(string.IsNullOrWhiteSpace(f.Q) ? "" : $", search \"{f.Q}\"")}";
 
     public sealed record ResolveBody(string? RecordId, string? Note, string? MappingFile = null);
-    public sealed record ApproveBody(bool Acknowledge);
+    public sealed record ApproveBody(bool Acknowledge, string? Version = null);
     public sealed record UserBody(string? UserName, string? DisplayName, string? Role, string? Password, bool? Active);
 }

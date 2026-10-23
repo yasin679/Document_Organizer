@@ -307,7 +307,7 @@ Temporary credentials are cached and refreshed five minutes before they expire.
 
 | Area | Control |
 |---|---|
-| Authentication | Local accounts; PBKDF2-SHA256, 210,000 iterations; 10-character, 3-class policy; lockout for 10 minutes after 5 failures |
+| Authentication | Local accounts; PBKDF2-SHA256, 210,000 iterations; 10-character, 3-class policy; sign-in blocked for 10 minutes after 5 failures per user name and IP address; server-side sessions (table `sessions`) ended by sign-out, password change or reset; every change to one job is handled one request at a time (per-job lock), and approval can carry the job `version` so a stale page cannot approve a changed job (HTTP 409) |
 | Session | HttpOnly, SameSite=Strict cookie, Secure over HTTPS; sliding inactivity timeout (default 30 minutes) |
 | Authorization | Policies View, Operate and Admin mapped to Viewer, Operator and Administrator on every endpoint; disabled users lose access on their next request |
 | CSRF | State-changing API requests must carry the header `X-DocOrg: 1` |

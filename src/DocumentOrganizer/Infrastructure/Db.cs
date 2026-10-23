@@ -51,6 +51,9 @@ public sealed class AppDb
         AddColumnIfMissing("items", "excluded_by", "TEXT");
         AddColumnIfMissing("items", "excluded_at", "TEXT");
         AddColumnIfMissing("items", "exclusion_note", "TEXT");
+        // Server-side sessions, so logout and password changes end sessions immediately
+        Db.Execute("CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, user_name TEXT NOT NULL COLLATE NOCASE, created_at TEXT NOT NULL)");
+        Db.Execute("DELETE FROM sessions WHERE created_at < @c", ("c", DateTime.UtcNow.AddDays(-30).ToString("o")));
         // Maker-checker: who worked on the job, who submitted it for approval, and change requests after approval
         AddColumnIfMissing("jobs", "makers_json", "TEXT");
         AddColumnIfMissing("jobs", "submitted_by", "TEXT");
@@ -142,6 +145,9 @@ public sealed class AppDb
 
     public void UpdateJob(string id, params (string col, object? val)[] cols)
     {
+        // A job that goes back to Draft or starts scanning is no longer the version that was submitted for approval
+        if (cols.Any(c => c.col == "status" && c.val is string s && (s == JobStatus.Draft || s == JobStatus.Scanning)) && cols.All(c => c.col != "submitted_by"))
+            cols = cols.Concat(new (string, object?)[] { ("submitted_by", null), ("submitted_at", null), ("submit_note", null) }).ToArray();
         var set = string.Join(",", cols.Select(c => $"{c.col}=@{c.col}"));
         var args = cols.Select(c => (c.col, c.val)).Append(("id", (object?)id)).ToArray();
         Db.Execute($"UPDATE jobs SET {set} WHERE id=@id", args);

@@ -154,6 +154,49 @@ let settingsBefore;
     const nothing = await fails(op1('POST', `/api/jobs/${id}/items/exclude`, { allInView: true, status: 'EXCEPTIONS', note: 'nothing left' }));
     check(nothing?.status === 400, 'a request with no matching items is refused');
 
+    // ---- races and stale pages (checker findings, iteration 1)
+    {
+      const { id: rid } = await op1('POST', '/api/jobs', { name: 'E2E mc races', source: { type: 'Local', path: src }, destination: { type: 'Local', path: join(root, 'out-race') } });
+      await op1('POST', `/api/jobs/${rid}/mappings`, form([['log.csv', csv]]));
+      let bad = 0;
+      for (let k = 0; k < 8; k++) {
+        await op1('POST', `/api/jobs/${rid}/scan`); await waitFor(op1, rid, ['Awaiting approval']);
+        const extra = csv + `\r\nX${k},E9,Offer,2024-01-01,u${1 + (k % 2)}.pdf`;
+        await Promise.allSettled([op1('POST', `/api/jobs/${rid}/submit`, {}), op1('POST', `/api/jobs/${rid}/mapping`, form([[`v${k}.csv`, extra]]))]);
+        const jj = await op1('GET', `/api/jobs/${rid}`);
+        if (jj.submittedBy && jj.status !== 'Awaiting approval') bad++;
+        if (jj.submittedBy) await op1('POST', `/api/jobs/${rid}/withdraw`);
+      }
+      check(bad === 0, 'submit racing a mapping upload never leaves a changed job marked as submitted');
+      await op1('POST', `/api/jobs/${rid}/scan`); await waitFor(op1, rid, ['Awaiting approval']);
+      await op1('POST', `/api/jobs/${rid}/submit`, {});
+      const seen = (await op2('GET', `/api/jobs/${rid}`)).version;
+      await op1('POST', `/api/jobs/${rid}/withdraw`);
+      await op1('POST', `/api/jobs/${rid}/mapping`, form([['changed.csv', csv + '\r\nZ1,E9,Offer,2024-01-01,u1.pdf']]));
+      await op1('POST', `/api/jobs/${rid}/scan`); await waitFor(op1, rid, ['Awaiting approval']);
+      await op1('POST', `/api/jobs/${rid}/submit`, {});
+      const stale = await fails(admin('POST', `/api/jobs/${rid}/approve`, { acknowledge: true, version: seen }));
+      check(stale?.status === 409, 'approval from a page opened before the job changed is refused (409)');
+      const fresh = (await admin('GET', `/api/jobs/${rid}`)).version;
+      const both = await Promise.allSettled([admin('POST', `/api/jobs/${rid}/approve`, { acknowledge: true, version: fresh }), admin('POST', `/api/jobs/${rid}/approve`, { acknowledge: true, version: fresh })]);
+      check(both.filter(x => x.status === 'fulfilled').length === 1, 'two approvals at the same moment: exactly one succeeds');
+      await waitFor(admin, rid, ['Completed', 'Completed with exceptions']);
+      const au = await admin('GET', `/api/audit?q=${encodeURIComponent(rid)}&pageSize=200`);
+      check(au.items.filter(a => a.event === 'Processing approved').length === 1, 'only one approval is recorded');
+      // change requests: approve and reject at the same moment, duplicate requests
+      let doubles = 0;
+      for (let k = 0; k < 6; k++) {
+        const rq = await op1('POST', `/api/jobs/${rid}/items/exclude`, { allInView: true, status: 'EXCEPTIONS', note: 'race ' + k });
+        const dup = await fails(op1('POST', `/api/jobs/${rid}/items/exclude`, { allInView: true, status: 'EXCEPTIONS', note: 'again' }));
+        if (k === 0) check(dup?.status === 400 && /already in pending request/.test(JSON.stringify(dup.body)), 'a second request for items already in a pending request is refused');
+        const r2 = await Promise.allSettled([op2('POST', `/api/jobs/${rid}/requests/${rq.requestId}/approve`), op2('POST', `/api/jobs/${rid}/requests/${rq.requestId}/reject`, { note: 'no thanks' })]);
+        if (r2.filter(x => x.status === 'fulfilled').length !== 1) doubles++;
+        const st = (await op1('GET', `/api/jobs/${rid}/requests`)).find(x => x.id === rq.requestId).status;
+        if (st === 'Approved') await op2('POST', `/api/jobs/${rid}/items/restore`, { allInView: true }).then(x => op1('POST', `/api/jobs/${rid}/requests/${x.requestId}/approve`));
+      }
+      check(doubles === 0, 'approve and reject of the same request at the same moment: exactly one succeeds');
+    }
+
     // with the setting off, a job is approved directly again (single-person installations)
     await admin('PUT', '/api/settings', { ...settingsBefore, requireSecondApprover: false });
     const { id: id2 } = await op1('POST', '/api/jobs', { name: 'E2E no maker-checker', source: { type: 'Local', path: src }, destination: { type: 'Local', path: join(root, 'out2') } });

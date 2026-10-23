@@ -337,12 +337,12 @@ To add a user:
 3. Click **Add user**. Send the initial password to the user through a secure channel.
 4. The user signs in and changes it under **Settings > My password**.
 
-To remove access, click **Disable**. The user's history stays in the audit log. To reset a forgotten password, click **Reset password** and type a new password for the user. A locked account unlocks by itself after 10 minutes.
+To remove access, click **Disable**. The user's history stays in the audit log. To reset a forgotten password, click **Reset password** and type a new password for the user. Sign-in blocked after wrong passwords unblocks by itself after 10 minutes. Resetting a password signs that user out everywhere.
 
 > [!NOTE]
 > **Sign-in protection**
 >
-> Passwords are stored as PBKDF2-SHA256 hashes with 210,000 iterations. After 5 wrong passwords, the account is locked for 10 minutes.
+> Passwords are stored as PBKDF2-SHA256 hashes with 210,000 iterations. After 5 wrong passwords from one computer, sign-in for that user from that computer is blocked for 10 minutes (others are not affected). Signing out, changing or resetting a password ends the sessions on the server immediately.
 
 ## 6 Testing with emulators
 

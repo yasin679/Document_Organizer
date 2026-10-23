@@ -53,8 +53,10 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     o.Events.OnValidatePrincipal = ctx =>
     {
         var name = ctx.Principal?.Identity?.Name;
-        var u = name == null ? null : ctx.HttpContext.RequestServices.GetRequiredService<UserStore>().Get(name);
-        if (u == null || u.Long("active") == 0 || u.Str("role") != ctx.Principal!.FindFirstValue(ClaimTypes.Role))
+        var store = ctx.HttpContext.RequestServices.GetRequiredService<UserStore>();
+        var u = name == null ? null : store.Get(name);
+        // Signed out, password changed or reset: the session no longer exists on the server
+        if (u == null || u.Long("active") == 0 || u.Str("role") != ctx.Principal!.FindFirstValue(ClaimTypes.Role) || !store.SessionValid(ctx.Principal!.FindFirstValue("sid")))
         { ctx.RejectPrincipal(); return ctx.HttpContext.SignOutAsync(); }
         return Task.CompletedTask;
     };

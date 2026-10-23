@@ -79,7 +79,7 @@ Open the link your administrator gives you. On a laptop installation it is http:
 > [!WARNING]
 > **If sign-in fails**
 >
-> After 5 wrong passwords the account is locked for 10 minutes. Ask an administrator to reset your password if you have forgotten it. Every sign-in, successful or not, is recorded in the audit log.
+> After 5 wrong passwords, sign-in from your computer is blocked for 10 minutes. Ask an administrator to reset your password if you have forgotten it. Every sign-in, successful or not, is recorded in the audit log.
 
 ### 2.2 Screen layout
 
@@ -103,7 +103,7 @@ Every page has the same layout: the navigation bar on the left, the page title a
 | Resolve ambiguous files, approve, pause, resume, retry | No | Yes | Yes |
 | Delete a job | No | Own draft jobs | Any job |
 | Change settings, manage users | No | No | Yes |
-| With maker-checker on: approve a job, or approve a change request, that they did not work on | No | Yes | Yes |
+| With maker-checker on: approve a job they did not work on, or a change request they did not make | No | Yes | Yes |
 
 ### 2.4 Signing out and session timeout
 

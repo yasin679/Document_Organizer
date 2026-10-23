@@ -70,7 +70,7 @@ public sealed class UserStore(AppDb app)
             SetPassword("admin", pw);
             app.Db.Execute("UPDATE users SET active=1, role=@r WHERE user_name='admin'", ("r", Roles.Administrator));
         }
-        _lockout.TryRemove("admin", out _);
+        foreach (var k in _lockout.Keys.Where(k => k.StartsWith("admin|", StringComparison.OrdinalIgnoreCase))) _lockout.TryRemove(k, out _);
         app.Audit("System", null, "Admin password set", null, "Password for 'admin' set from DOCORG_ADMIN_PASSWORD at start-up.");
         return "ok";
     }
@@ -81,21 +81,41 @@ public sealed class UserStore(AppDb app)
 
     public Row? Get(string userName) => app.Db.QueryOne("SELECT * FROM users WHERE user_name=@u", ("u", userName));
 
-    public (Row? user, string? error) Authenticate(string userName, string password)
+    /// <summary>
+    /// Checks the password. Failed attempts are counted per user name and computer (IP address), so someone guessing
+    /// from one computer is locked out after 5 tries without locking the real user out everywhere.
+    /// </summary>
+    public (Row? user, string? error) Authenticate(string userName, string password, string? ip = null)
     {
-        if (_lockout.TryGetValue(userName, out var l) && l.until > DateTime.UtcNow)
-            return (null, $"Too many failed attempts. Try again after {l.until.ToLocalTime():HH:mm}.");
+        var key = userName + "|" + (ip ?? "");
+        if (_lockout.TryGetValue(key, out var l) && l.until > DateTime.UtcNow)
+            return (null, $"Too many failed attempts from this computer. Try again after {l.until.ToLocalTime():HH:mm}.");
         var u = Get(userName);
         if (u == null || u.Long("active") == 0 || !Passwords.Verify(password, u.Str("password_hash")!))
         {
-            var f = _lockout.AddOrUpdate(userName, _ => (1, DateTime.MinValue), (_, o) => (o.fails + 1, o.fails + 1 >= 5 ? DateTime.UtcNow.AddMinutes(10) : DateTime.MinValue));
-            return (null, f.fails >= 5 ? "Too many failed attempts. The account is locked for 10 minutes." : "User name or password is incorrect.");
+            var f = _lockout.AddOrUpdate(key, _ => (1, DateTime.MinValue), (_, o) => (o.fails + 1, o.fails + 1 >= 5 ? DateTime.UtcNow.AddMinutes(10) : DateTime.MinValue));
+            return (null, f.fails >= 5 ? "Too many failed attempts. Sign-in from this computer is blocked for 10 minutes." : "User name or password is incorrect.");
         }
-        _lockout.TryRemove(userName, out _);
+        _lockout.TryRemove(key, out _);
         app.Db.Execute("UPDATE users SET last_login=@t WHERE user_name=@u", ("t", DateTime.UtcNow.ToString("o")), ("u", userName));
         return (u, null);
     }
 
-    public void SetPassword(string userName, string password) =>
+    /// <summary>Sets a new password and ends every session of that user.</summary>
+    public void SetPassword(string userName, string password)
+    {
         app.Db.Execute("UPDATE users SET password_hash=@p WHERE user_name=@u", ("p", Passwords.Hash(password)), ("u", userName));
+        EndSessions(userName);
+    }
+
+    public string StartSession(string userName)
+    {
+        var sid = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+        app.Db.Execute("INSERT INTO sessions(sid,user_name,created_at) VALUES(@s,@u,@t)", ("s", sid), ("u", userName), ("t", DateTime.UtcNow.ToString("o")));
+        return sid;
+    }
+
+    public bool SessionValid(string? sid) => sid != null && app.Db.Scalar("SELECT 1 FROM sessions WHERE sid=@s", ("s", sid)) != null;
+    public void EndSession(string? sid) { if (sid != null) app.Db.Execute("DELETE FROM sessions WHERE sid=@s", ("s", sid)); }
+    public void EndSessions(string userName) => app.Db.Execute("DELETE FROM sessions WHERE user_name=@u", ("u", userName));
 }

@@ -131,7 +131,10 @@ No. There is no screen or API to change the audit log.
 | "address already in use" for port 5080 | Another copy is already running | Stop the other copy, or change `Urls` |
 | Admin password not accepted | Password was not set at start, or was shorter than 8 characters | Start again with `DOCORG_ADMIN_PASSWORD` set (or type it at the `start.cmd` prompt) |
 | No temporary password appears | A password already exists in the database | Set a new one with `DOCORG_ADMIN_PASSWORD` at start-up |
-| "The account is locked for 10 minutes" | 5 wrong passwords | Wait 10 minutes, or ask an administrator to reset the password |
+| "Sign-in from this computer is blocked for 10 minutes" | 5 wrong passwords from this computer | Wait 10 minutes, or ask an administrator to reset the password |
+| "The job has changed since you opened it" | Someone rescanned, resubmitted or changed exceptions after you opened the page | Reload the page, review again, then approve |
+| "Source folder cannot be inside the destination folder" | Copies could be written into the source | Choose a destination outside the source, for example a sibling folder |
+| "… cannot be used as a folder name (it is only dots or spaces)" | An employee code or type such as `.` or `..` | Correct the value in the mapping file and scan again |
 | Signed out unexpectedly | 30 minutes without activity | Sign in again. Running jobs are not affected. |
 | Signed out at once behind a load balancer, or every audit entry shows the proxy's address | Reverse proxy headers not trusted | Set `DocumentOrganizer__BehindReverseProxy=true` |
 

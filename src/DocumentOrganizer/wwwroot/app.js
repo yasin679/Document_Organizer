@@ -571,7 +571,7 @@ function renderResolve() {
 function openApprove() {
   const c = S.job.counts;
   $('#layer').innerHTML = `<div class="scrim modal-wrap" data-action="close-layer"><div class="modal" role="dialog" aria-modal="true" aria-label="Confirm approval">
-    <h2 style="font:600 19px var(--f-display)">Start copying ${fmt(c.READY)} files?</h2>
+    <h2 style="font:600 19px var(--f-display)">Start copying ${fmt(c.READY)} file${c.READY === 1 ? '' : 's'}?</h2>
     <div class="small muted">Files are copied to <span class="mono">${esc(S.job.destinationText)}</span> in batches of ${fmt(S.job.config.batchSize)}${S.job.config.integrity !== 'None' ? ' with ' + esc(S.job.config.integrity) + ' verification' : ''}. The source is not modified. Your approval is recorded in the audit log.</div>
     <div class="foot" style="margin-top:4px"><button class="btn" data-action="close-layer">Cancel</button><button class="btn primary" data-action="confirm-approve">Approve and start</button></div>
   </div></div>`;
@@ -778,7 +778,7 @@ document.addEventListener('click', e => {
     'req-approve': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/approve`); toast(r.message); await loadJob(true); }, el),
     'req-withdraw': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/requests/${el.dataset.id}/reject`, { note: '' }); toast(r.message); await loadJob(true); }, el),
     'confirm-approve': () => guard(async () => {
-      await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true });
+      await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/approve`, { acknowledge: true, version: S.job.version });
       $('#layer').innerHTML = ''; resetItems(); await loadJob(); window.scrollTo(0, 0);
     }, el),
     'pause': () => guard(async () => { const r = await api('POST', `/api/jobs/${encodeURIComponent(S.job.id)}/pause`); toast(r.message); }, el),

@@ -222,6 +222,26 @@ public static class Template
     /// <summary>Accepts both {Token} and &lt;Token&gt; styles.</summary>
     public static string Normalize(string template) => Regex.Replace(template.Trim().Replace('\\', '/'), @"<(\w+)>", "{$1}").Trim('/');
 
+    /// <summary>
+    /// A value used in the folder template that is not blank but would disappear as a folder name ("." or ".."),
+    /// which would silently put files one level higher. Returns a description such as "EmployeeCode '..'", or null.
+    /// </summary>
+    public static string? UnusableValue(string template, Candidate r)
+    {
+        var t = Normalize(template);
+        foreach (Match m in Regex.Matches(t, @"\{(\w+)\}"))
+        {
+            var token = m.Groups[1].Value;
+            string? v = token.ToLowerInvariant() switch
+            {
+                "employeecode" => r.EmployeeCode, "documenttype" => r.DocumentType, "modulecode" => r.ModuleCode,
+                "submodulecode" => r.SubModuleCode, "documentname" => r.DocumentName, "employeename" => r.EmployeeName, _ => null
+            };
+            if (!string.IsNullOrWhiteSpace(v) && Sanitize(v).Length == 0) return $"{token} '{v}'";
+        }
+        return null;
+    }
+
     public static string Build(string template, Candidate r, string year, string fileName)
     {
         var t = Normalize(template);

@@ -18,8 +18,13 @@ namespace DocumentOrganizer.Engine;
 /// </summary>
 public static class FourEyes
 {
-    public static List<string> Makers(Row job) =>
-        job.Str("makers_json") is string s ? JsonSerializer.Deserialize<List<string>>(s) ?? new() : new();
+    /// <summary>Everyone who worked on the job; the creator always counts (also for jobs created before maker-checker existed).</summary>
+    public static List<string> Makers(Row job)
+    {
+        var list = job.Str("makers_json") is string s ? JsonSerializer.Deserialize<List<string>>(s) ?? new() : new();
+        if (job.Str("created_by") is string c && !list.Contains(c, StringComparer.OrdinalIgnoreCase)) list.Insert(0, c);
+        return list;
+    }
 
     /// <summary>Records the user as one of the job's makers.</summary>
     public static void TouchMaker(AppDb db, string jobId, string user)

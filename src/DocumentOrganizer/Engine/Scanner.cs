@@ -265,6 +265,7 @@ public sealed class Scanner(AppDb app, StorageFactory storage, ILogger<Scanner> 
         string? fail = null;
         if (string.IsNullOrWhiteSpace(rec.EmployeeCode)) fail = $"Blank EmployeeCode in mapping record {rec.RecordId}.";
         else if (string.IsNullOrWhiteSpace(rec.DocumentType)) fail = $"Blank Type / Document Type in mapping record {rec.RecordId}.";
+        else if (Template.UnusableValue(cfg.Template, rec) is string bad) fail = $"{bad} in mapping record {rec.RecordId} cannot be used as a folder name (it is only dots or spaces).";
         else if (string.Equals(f.AccessTier, "Archive", StringComparison.OrdinalIgnoreCase)) fail = "Source inaccessible: the object is in an archive tier (Azure Archive, S3 Glacier Flexible Retrieval or Deep Archive) and is not restored automatically.";
         else if (f.Size == 0) fail = "Empty (0-byte) file: unsupported or corrupt.";
         var (year, yErr) = YearRules.Resolve(cfg, rec, f.Key);

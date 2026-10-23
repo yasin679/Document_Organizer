@@ -63,8 +63,9 @@ public sealed class Exclusions(AppDb app)
         }
         if (!string.IsNullOrWhiteSpace(q))
         {
-            where += " AND (source_key LIKE @q OR file_name LIKE @q OR record_id LIKE @q OR employee_code LIKE @q OR dest_key LIKE @q OR reason LIKE @q)";
-            args.Add(("q", "%" + q.Trim() + "%"));
+            // % and _ in the search text are searched for literally
+            where += " AND (source_key LIKE @q ESCAPE '\\' OR file_name LIKE @q ESCAPE '\\' OR record_id LIKE @q ESCAPE '\\' OR employee_code LIKE @q ESCAPE '\\' OR dest_key LIKE @q ESCAPE '\\' OR reason LIKE @q ESCAPE '\\')";
+            args.Add(("q", "%" + q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%"));
         }
         if (!string.IsNullOrWhiteSpace(group)) { where += $" AND ({GroupSql})=@g"; args.Add(("g", group)); }
         return (where, args);

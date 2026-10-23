@@ -68,7 +68,7 @@ function xlsxSheets(buf) {
 
     console.log('\n== L1  Unsafe values in folder names stay inside the destination');
     {
-      const src = files(join(root, 'L1'), [['l1a.pdf'], ['l1b.pdf'], ['l1c.pdf'], ['l1d.pdf'], ['l1e.pdf'], ['l1f.pdf']]);
+      const src = files(join(root, 'L1'), [['l1a.pdf'], ['l1b.pdf'], ['l1c.pdf'], ['l1d.pdf'], ['l1e.pdf'], ['l1f.pdf'], ['l1g.pdf'], ['l1h.pdf']]);
       const dst = join(root, 'L1-out');
       const csv = ['EmployeeCode,Type,UploadedOn,FileName',
         '../../escape,Offer,2024-01-01,l1a.pdf',          // path traversal attempt
@@ -76,7 +76,9 @@ function xlsxSheets(buf) {
         'E1,Form 16/A,2024-01-01,l1c.pdf',                 // slash inside a value
         'E1,Pvt Ltd.,2024-01-01,l1d.pdf',                  // trailing dot (invalid on Windows)
         'CON,Offer,2024-01-01,l1e.pdf',                    // reserved device name
-        'E1,COM5.tar,2024-01-01,l1f.pdf'].join('\r\n');    // reserved name before the first dot
+        'E1,COM5.tar,2024-01-01,l1f.pdf',                  // reserved name before the first dot
+        '..,Offer,2024-01-01,l1g.pdf',                      // only dots: would disappear as a folder
+        'E1, . ,2024-01-01,l1h.pdf'].join('\r\n');
       const { id } = await job('L1', src, dst, 'l1.csv', csv);
       const it = await items(id);
       const dk = f => it.find(i => i.fileName === f)?.destKey || '';
@@ -86,6 +88,8 @@ function xlsxSheets(buf) {
       check(dk('l1d.pdf').split('/')[1] === 'Pvt Ltd', `trailing dot removed: ${dk('l1d.pdf')}`);
       check(dk('l1e.pdf').startsWith('_CON/'), `reserved name prefixed: ${dk('l1e.pdf')}`);
       check(dk('l1f.pdf').split('/')[1] === '_COM5.tar', `reserved name before a dot prefixed: ${dk('l1f.pdf')}`);
+      check(it.find(i => i.fileName === 'l1g.pdf')?.status === 'INVALID' && /only dots/.test(it.find(i => i.fileName === 'l1g.pdf').reason), 'employee code of only dots is INVALID, not filed one level up');
+      check(it.find(i => i.fileName === 'l1h.pdf')?.status === 'INVALID', 'document type of only a dot is INVALID');
       const done = await copy(id);
       const all = walk(dst);
       check(done.counts.PROCESSED === 6 && all.length === 6 && all.every(p => resolve(p).startsWith(resolve(dst) + '/')), 'all six copied, every file inside the destination folder');
@@ -164,6 +168,7 @@ function xlsxSheets(buf) {
       check((await fails(mk(join(src, 'out'))))?.status === 400, 'destination inside the source is refused');
       check((await fails(mk(src + '/')))?.status === 400, 'destination equal to the source is refused');
       check(!(await fails(mk(join(root, 'L5src2')))), 'a sibling folder whose name starts the same is allowed');
+      check((await fails(mk(root)))?.status === 400, 'source inside the destination is refused (copies could land in the source)');
       const empty = join(root, 'L5empty'); mkdirSync(empty);
       const { id, j } = await job('L5 empty source', empty, join(root, 'L5-out'), 'm.csv', 'EmployeeCode,Type,UploadedOn,FileName\r\nE1,Offer,2024-01-01,a.pdf\r\nE2,Offer,2024-01-01,b.pdf');
       check(j.discovered === 0 && j.counts.MISSING === 2, 'empty source: every record MISSING');
@@ -202,6 +207,7 @@ function xlsxSheets(buf) {
         if (r) { check(false, `search for ${q} failed: ${r.message}`); break; }
       }
       check(true, 'search with %, _, quotes, backslash, brackets and emoji does not fail');
+      check((await call('GET', `/api/jobs/${r1.id}/items?status=ALL&q=${encodeURIComponent('%')}`)).total === 0 && (await call('GET', `/api/jobs/${r1.id}/items?status=ALL&q=_`)).total === 0, '% and _ are searched for literally (not as wildcards)');
       const long = 'a'.repeat(180) + '_contract.pdf', long2 = 'a'.repeat(181) + '_contract.pdf';
       const s3 = files(join(root, 'L7c'), [[long], [long2]]);
       const { id } = await job('L7 long', s3, join(root, 'L7c-out'), 'l.csv', `EmployeeCode,Type,UploadedOn,FileName\r\nE1,Offer,2024-01-01,${long}\r\nE1,Offer,2024-01-01,${long2}`);

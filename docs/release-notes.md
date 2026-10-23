@@ -105,6 +105,20 @@ The rule is shown in the approval panel, the report summary and the audit entry 
 - Reports with more items than an Excel sheet holds (1,048,575 rows) continue on further sheets (*Reconciliation 2*, …) instead of producing a file Excel cannot open.
 - Deleting old jobs by retention now also removes their exclusions and change requests.
 
+Found by the independent checker and fixed:
+
+- **Changes racing a submission.** A mapping upload or scan sent at the same moment as *Submit* could leave a changed job marked as submitted. Every change to a job is now handled one request at a time, and any return to Draft or a new scan clears the submission.
+- **Approving from an old page.** Approval now carries the version of the job the approver looked at; if it was rescanned, resubmitted or its exceptions changed in the meantime, approval is refused with "The job has changed since you opened it". The confirmation also says *1 file* instead of *1 files*.
+- **Two approvals or decisions at once.** Only one wins; a second approval is no longer recorded in the audit log, and a change request can no longer be both approved and rejected.
+- **Source inside the destination** (for example source `D:\Export\Docs`, destination `D:\Export`) is now refused, as the guide always said; before, copies could be written into the source folder. The same applies to cloud prefixes.
+- **Employee code or type of only dots** (`.`, `..`) is INVALID instead of silently putting files one folder higher.
+- **Duplicate change requests** for items already in a pending request are refused.
+- **Saving one setting** through the API no longer resets the others to their defaults.
+- **Search** treats `%` and `_` literally.
+- **Sessions** end on the server when you sign out, change your password or an administrator resets it.
+- **Sign-in lockout** is per user and computer, so someone typing wrong passwords elsewhere cannot lock a real user out.
+- **Job creators** always count as makers, also for jobs created before this version.
+
 ### 2.10 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.
