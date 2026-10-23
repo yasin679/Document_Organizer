@@ -437,6 +437,34 @@ A file is AMBIGUOUS when more than one mapping record names it, for example `id_
 When an administrator turns on **Maker-checker** in Settings, no one can approve a job they worked on. This is the four-eyes control many audit teams require.
 
 - **Makers.** Everyone who creates the job, uploads or removes mapping files, saves rules, scans, resolves ambiguous files, or excludes or restores items is recorded as a maker of that job.
+![Figure 14d: Maker-checker on: the maker submits the job](images/14d-submit.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Maker-checker notice | Shown when the setting is on. Lists the people who worked on the job and so cannot approve it. |
+| 2 | Note for the approver | Optional. Shown to the checker with the job. |
+| 3 | Confirmation | Required before submitting. |
+| 4 | **Submit for approval** | Locks the job and sends it to a checker. |
+
+![Figure 14e: What the checker sees](images/14e-checker.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Submitted banner | Who submitted the job, when, and the note. The job cannot be changed while it waits. |
+| 2 | Prepared and submitted by | The makers and the submitter. |
+| 3 | **Approve and start copy** | Starts copying after the confirmation. Refused if the job changed since the page was opened (reload and review again). |
+| 4 | **Reject…** | Sends the job back to the makers with a reason (required). |
+
+![Figure 14f: Change requests after approval](images/14f-change-requests.jpg)
+
+| # | Item | Description |
+|---|---|---|
+| 1 | Change requests | On the reconciliation step when maker-checker is on. |
+| 2 | Change | What would change (exclude or restore, items and filter) and the requester's note. |
+| 3 | Status | Pending, Approved, Rejected or Withdrawn, with who decided. |
+| 4 | **Approve** | For anyone except the requester: applies the change. |
+| 5 | **Reject…** | With a reason. The requester sees **Withdraw** instead of these buttons. |
+
 - **Submit.** When the scan is reviewed, a maker ticks the confirmation and clicks **Submit for approval** (with an optional note for the approver). The job shows **Submitted for approval** and is locked: nobody can change mapping files, rules, exclusions or resolutions until it is approved, rejected or withdrawn. The person who submitted it, or an administrator, can **Withdraw** it to make changes.
 - **Approve or reject.** Any operator or administrator who is not one of the job's makers sees **Approve and start copy** and **Reject…**. Rejecting needs a reason, which the makers see on the job. People who worked on the job see who can approve it instead of the buttons.
 - **After approval.** Excluding or restoring items on an approved job sends a **change request**. Nothing changes until a different person approves it under **Change requests** on the reconciliation step. The requester can withdraw it; anyone else can approve it or reject it with a reason. An approved exclusion keeps the requester as *Excluded by* and adds *(approved by …)* to the note.
