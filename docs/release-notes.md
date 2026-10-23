@@ -136,6 +136,7 @@ Found by the independent checker in its third round and fixed:
 - **Items with a blank template value** each had their own reason in *Exceptions by reason*; they now share one reason (*Blank value used in the folder template*) so they can be excluded together.
 - **A template token whose column is not mapped** (for example `{EmployeeName}`) is refused when the rules are saved, instead of making every item INVALID after the scan.
 - **Source and destination checks** now follow folder links at any level of the path.
+- **Two jobs created at the same moment** could get the same job number and the second failed with an error (found by the maker's tests this round).
 
 ### 2.10 Other changes
 

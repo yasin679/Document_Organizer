@@ -131,9 +131,10 @@ public sealed class AppDb
     public string NextJobId()
     {
         var prefix = "JOB-" + DateTime.Now.ToString("yyyyMMdd") + "-";
-        var max = Db.Scalar("SELECT MAX(id) FROM jobs WHERE id LIKE @p", ("p", prefix + "%")) as string;
+        // Highest number used today (compared as a number, so JOB-…-10000 follows JOB-…-9999)
         int n = 1;
-        if (max != null && int.TryParse(max[prefix.Length..], out var last)) n = last + 1;
+        foreach (var r in Db.Query("SELECT id FROM jobs WHERE id LIKE @p", ("p", prefix + "%")))
+            if (int.TryParse(r.Str("id")![prefix.Length..], out var last) && last >= n) n = last + 1;
         return prefix + n.ToString("0000");
     }
 

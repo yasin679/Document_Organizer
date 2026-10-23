@@ -196,12 +196,16 @@ public static class Endpoints
             string srcMsg, dstMsg;
             try { srcMsg = await src.TestAsync(false, cts.Token); } catch (Exception ex) { throw new ApiError("Source check failed: " + ex.Message); }
             try { dstMsg = await dst.TestAsync(true, cts.Token); } catch (Exception ex) { throw new ApiError("Destination check failed: " + ex.Message); }
-            var id = db.NextJobId();
-            db.Db.Execute(@"INSERT INTO jobs(id,name,source_json,dest_json,config_json,status,created_by,created_at)
-                VALUES(@id,@n,@src,@dst,@cfg,@st,@by,@at)",
-                ("id", id), ("n", string.IsNullOrWhiteSpace(body.Name) ? id : body.Name!.Trim()),
-                ("src", AppDb.ToJson(body.Source)), ("dst", AppDb.ToJson(body.Destination)), ("cfg", AppDb.ToJson(new JobConfig())),
-                ("st", JobStatus.Draft), ("by", u), ("at", DateTime.UtcNow.ToString("o")));
+            string id;
+            lock (JobIdLock)   // two jobs created at the same moment must not get the same number
+            {
+                id = db.NextJobId();
+                db.Db.Execute(@"INSERT INTO jobs(id,name,source_json,dest_json,config_json,status,created_by,created_at)
+                    VALUES(@id,@n,@src,@dst,@cfg,@st,@by,@at)",
+                    ("id", id), ("n", string.IsNullOrWhiteSpace(body.Name) ? id : body.Name!.Trim()),
+                    ("src", AppDb.ToJson(body.Source)), ("dst", AppDb.ToJson(body.Destination)), ("cfg", AppDb.ToJson(new JobConfig())),
+                    ("st", JobStatus.Draft), ("by", u), ("at", DateTime.UtcNow.ToString("o")));
+            }
             FourEyes.TouchMaker(db, id, u);
             db.Audit(u, r, "Job created", id, $"Source {body.Source.Describe()} · Destination {body.Destination.Describe()}", Ip(ctx));
             db.Audit(u, r, "Source connected", id, srcMsg + " " + dstMsg, Ip(ctx));
@@ -866,6 +870,7 @@ public static class Endpoints
     /// <summary>The application version (from the project file), shown in the side bar so people can see which build is running.</summary>
     public static readonly string AppVersion = typeof(Endpoints).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
 
+    private static readonly object JobIdLock = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> JobGates = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

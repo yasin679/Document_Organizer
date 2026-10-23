@@ -66,6 +66,14 @@ function xlsxSheets(buf) {
   try {
     await call('POST', '/api/auth/login', { userName: 'admin', password });
 
+    console.log('\n== L0  Several people creating jobs at the same moment');
+    {
+      const s0 = files(join(root, 'L0'), [['a.pdf']]);
+      const made = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => call('POST', '/api/jobs', { name: 'L0 ' + i, source: { type: 'Local', path: s0 }, destination: { type: 'Local', path: join(root, 'L0-out' + i) } })));
+      const ids = made.filter(x => x.status === 'fulfilled').map(x => x.value.id);
+      check(ids.length === 12 && new Set(ids).size === 12, `12 jobs created at once all succeed with different numbers (${ids.length} ok)`);
+    }
+
     console.log('\n== L1  Unsafe values in folder names stay inside the destination');
     {
       const src = files(join(root, 'L1'), [['l1a.pdf'], ['l1b.pdf'], ['l1c.pdf'], ['l1d.pdf'], ['l1e.pdf'], ['l1f.pdf'], ['l1g.pdf'], ['l1h.pdf']]);
