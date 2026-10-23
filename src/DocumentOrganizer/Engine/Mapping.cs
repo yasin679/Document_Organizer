@@ -223,8 +223,8 @@ public static class Template
     public static string Normalize(string template) => Regex.Replace(template.Trim().Replace('\\', '/'), @"<(\w+)>", "{$1}").Trim('/');
 
     /// <summary>
-    /// A value used in the folder template that is not blank but would disappear as a folder name ("." or ".."),
-    /// which would silently put files one level higher. Returns a description such as "EmployeeCode '..'", or null.
+    /// A value used in the folder template that is blank, or would disappear as a folder name ("." or ".."):
+    /// either would silently put files one folder level higher. Returns the reason, or null when every value is usable.
     /// </summary>
     public static string? UnusableValue(string template, Candidate r)
     {
@@ -237,7 +237,9 @@ public static class Template
                 "employeecode" => r.EmployeeCode, "documenttype" => r.DocumentType, "modulecode" => r.ModuleCode,
                 "submodulecode" => r.SubModuleCode, "documentname" => r.DocumentName, "employeename" => r.EmployeeName, _ => null
             };
-            if (!string.IsNullOrWhiteSpace(v) && Sanitize(v).Length == 0) return $"{token} '{v}'";
+            if (token.ToLowerInvariant() is "year" or "filename" or "mappingfile") continue;
+            if (string.IsNullOrWhiteSpace(v)) return $"{token} is blank, but the folder template uses {{{token}}}. Fill it in, or remove the token from the template.";
+            if (Sanitize(v).Length == 0) return $"{token} '{v}' cannot be used as a folder name (it is only dots or spaces).";
         }
         return null;
     }

@@ -53,6 +53,8 @@ async function fails(p) { try { await p; return null; } catch (e) { return e; } 
     await admin('PUT', '/api/settings', { maxParallelCopies: 4 });
     const after = (await admin('GET', '/api/settings')).settings;
     check(after.maxParallelCopies === 4 && after.requireSecondApprover === true && after.allowOverwrite === true, 'saving one setting leaves the others unchanged');
+    const unknown = await fails(admin('PUT', '/api/settings', { requireSecondApproval: true }));
+    check(unknown?.status === 400 && /Unknown setting/.test(JSON.stringify(unknown.body)), 'a misspelt setting name is refused, not ignored');
     const badType = await fails(admin('PUT', '/api/settings', { maxParallelCopies: 'many' }));
     check(badType?.status === 400, 'a setting with a wrong type is refused');
     // failed sign-ins: locked after 5 attempts with a clear message, and the right password is then refused for 10 minutes

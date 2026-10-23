@@ -149,7 +149,7 @@ The image listens on port 8080, runs as a non-root user and keeps its database i
 > [!TIP]
 > **Forgotten admin password**
 >
-> Stop the application and start it again with `DOCORG_ADMIN_PASSWORD` set to a new password (on Windows, `start.cmd` asks for it). The password is applied at start-up, the `admin` account is re-enabled, and the change is written to the audit log. Remove the variable afterwards on shared servers.
+> Stop the application and start it again with `DOCORG_ADMIN_PASSWORD` set to a new password (on Windows, `start.cmd` asks for it). The password is applied at start-up, the `admin` account is re-enabled, the admin's existing sessions are signed out, and the change is written to the audit log. It is applied only when the value is new: restarting with the same value changes nothing, so a password the admin later changes in the application is not undone. Remove the variable afterwards on shared servers.
 
 ## 4 Configuration
 

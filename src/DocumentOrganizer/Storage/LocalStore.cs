@@ -57,10 +57,24 @@ public sealed class LocalStore : IDocumentStore
         {
             await using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, true))
                 await content.CopyToAsync(fs, Hashing.BufferSize, ct);
-            File.Move(tmp, full, overwrite);
+            PlaceAtomically(tmp, full, key, overwrite);
         }
         catch (IOException) when (!overwrite && File.Exists(full)) { throw new DestinationExistsException(key); }
         finally { if (File.Exists(tmp)) File.Delete(tmp); }
+    }
+
+    // One lock per destination path (striped), so two jobs writing the same file cannot both pass the "does it exist" check.
+    private static readonly object[] PathLocks = Enumerable.Range(0, 1024).Select(_ => new object()).ToArray();
+    private static readonly StringComparer PathCompare = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    /// <summary>Moves the finished temporary file to its final name. Without overwrite, an existing file is never replaced.</summary>
+    private static void PlaceAtomically(string tmp, string full, string key, bool overwrite)
+    {
+        lock (PathLocks[(PathCompare.GetHashCode(full) & int.MaxValue) % PathLocks.Length])
+        {
+            if (!overwrite && File.Exists(full)) throw new DestinationExistsException(key);
+            File.Move(tmp, full, overwrite);
+        }
     }
 
     /// <summary>
@@ -98,7 +112,7 @@ public sealed class LocalStore : IDocumentStore
         try
         {
             File.Copy(ls.Full(sourceKey), tmp, false);
-            File.Move(tmp, dest, overwrite);
+            PlaceAtomically(tmp, dest, destKey, overwrite);
         }
         catch (IOException) when (!overwrite && File.Exists(dest)) { throw new DestinationExistsException(destKey); }
         finally { if (File.Exists(tmp)) File.Delete(tmp); }

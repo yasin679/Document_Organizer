@@ -50,8 +50,11 @@ public static class Endpoints
             var http = fctx.HttpContext;
             if (HttpMethods.IsGet(http.Request.Method) || !http.Request.Path.StartsWithSegments("/api/jobs")
                 || http.Request.RouteValues["id"] is not string jobId) return await next(fctx);
+            // Read an uploaded file completely before waiting for the job, so a slow upload does not hold up other people
+            if (http.Request.HasFormContentType) await http.Request.ReadFormAsync(http.RequestAborted);
             var gate = JobGates.GetOrAdd(jobId, _ => new SemaphoreSlim(1, 1));
-            await gate.WaitAsync(http.RequestAborted);
+            if (!await gate.WaitAsync(TimeSpan.FromSeconds(60), http.RequestAborted))
+                return Results.Json(new { error = "This job is busy with another change. Try again in a moment." }, statusCode: 409);
             try { return await next(fctx); }
             finally { gate.Release(); }
         });
@@ -160,12 +163,20 @@ public static class Endpoints
                 throw new ApiError("Destination must be different from the source.");
             if (body.Source.Type == "Local" && body.Destination.Type == "Local")
             {
-                var a = Path.GetFullPath(body.Source.Path!).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                var b = Path.GetFullPath(body.Destination.Path!).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                if (b.StartsWith(a, StringComparison.OrdinalIgnoreCase)) throw new ApiError("Destination folder cannot be inside the source folder.");
-                if (a.StartsWith(b, StringComparison.OrdinalIgnoreCase)) throw new ApiError("Source folder cannot be inside the destination folder (copies could be written into the source).");
+                // Compare real locations (a folder that is a link to another counts as that folder); case matters except on Windows and macOS
+                static string Real(string p)
+                {
+                    var full = Path.GetFullPath(p);
+                    try { if (new DirectoryInfo(full).ResolveLinkTarget(true) is FileSystemInfo t) full = t.FullName; } catch (IOException) { }
+                    return full.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                }
+                var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                var a = Real(body.Source.Path!); var b = Real(body.Destination.Path!);
+                if (b.StartsWith(a, cmp)) throw new ApiError("Destination folder cannot be inside the source folder.");
+                if (a.StartsWith(b, cmp)) throw new ApiError("Source folder cannot be inside the destination folder (copies could be written into the source).");
             }
-            if (body.Source.Type != "Local" && body.Source.Type == body.Destination.Type && body.Source.Connection == body.Destination.Connection
+            if (body.Source.Type != "Local" && body.Source.Type == body.Destination.Type
+                && string.Equals(body.Source.Connection, body.Destination.Connection, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(body.Source.Container, body.Destination.Container, StringComparison.Ordinal))
             {
                 static string P(string? s) { s = (s ?? "").Trim('/'); return s.Length == 0 ? "" : s + "/"; }
@@ -409,8 +420,6 @@ public static class Endpoints
             if (j.Str("status") != JobStatus.AwaitingApproval) throw new ApiError("Only a validated job awaiting approval can be approved.");
             if (js.IsRunning(id)) throw new ApiError("The job is running.");
             if (!body.Acknowledge) throw new ApiError("Confirm that you have reviewed the preview and exceptions.");
-            if (!string.IsNullOrEmpty(body.Version) && body.Version != JobVersion(j))
-                throw new ApiError("The job has changed since you opened it (it was rescanned, resubmitted or its exceptions changed). Reload the page, review it again, then approve.", 409);
             var c = db.CountByStatus(id);
             if (c[ItemStatus.Ready] == 0) throw new ApiError("There are no files ready for processing.");
             bool fourEyes = db.LoadSettings().RequireSecondApprover;
@@ -419,6 +428,10 @@ public static class Endpoints
                 if (!FourEyes.IsSubmitted(j)) throw new ApiError("Maker-checker is on: submit the job for approval first. A different person then approves it.");
                 if (FourEyes.CheckerProblem(j, u) is string why) throw new ApiError(why, 403);
             }
+            if (fourEyes && string.IsNullOrEmpty(body.Version))
+                throw new ApiError("Maker-checker is on: send the version of the job you reviewed (\"version\" from GET /api/jobs/{id}).");
+            if (!string.IsNullOrEmpty(body.Version) && body.Version != JobVersion(j))
+                throw new ApiError("The job has changed since you opened it (it was rescanned, resubmitted or its exceptions changed). Reload the page, review it again, then approve.", 409);
             db.UpdateJob(id, ("approved_by", u), ("approved_at", DateTime.UtcNow.ToString("o")));
             db.Audit(u, r, "Processing approved", id, $"{c[ItemStatus.Ready]:N0} files · COPY" +
                 (fourEyes ? $" · checker {u}; submitted by {j.Str("submitted_by")}; prepared by {string.Join(", ", FourEyes.Makers(j))}" : ""), Ip(ctx));
@@ -582,7 +595,7 @@ public static class Endpoints
             foreach (var (k, v) in body)
             {
                 var prop = typeof(AppSettings).GetProperties().FirstOrDefault(pp => pp.Name.Equals(k, StringComparison.OrdinalIgnoreCase));
-                if (prop == null) continue;
+                if (prop == null) throw new ApiError($"Unknown setting: {k}.");
                 try { prop.SetValue(s, v.Deserialize(prop.PropertyType, AppDb.Json)); }
                 catch (Exception) { throw new ApiError($"Setting {k} has an invalid value."); }
             }

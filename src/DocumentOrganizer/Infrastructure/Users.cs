@@ -64,6 +64,11 @@ public sealed class UserStore(AppDb app)
         var pw = Environment.GetEnvironmentVariable("DOCORG_ADMIN_PASSWORD");
         if (string.IsNullOrWhiteSpace(pw)) return null;
         if (pw.Length < 8) return "DOCORG_ADMIN_PASSWORD is shorter than 8 characters, so it was ignored.";
+        // Apply it only when the value is new, so a restart with the same value neither signs the admin out
+        // nor undoes a password the admin has since changed in the application
+        var stamp = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("docorg-admin-env|" + pw)));
+        if (Get("admin") != null && app.GetSetting("admin_env_password") == stamp) return null;
+        app.SetSetting("admin_env_password", stamp);
         if (Get("admin") == null) { Create("admin", "Administrator", Roles.Administrator, pw); }
         else
         {

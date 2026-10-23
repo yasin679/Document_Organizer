@@ -119,6 +119,16 @@ Found by the independent checker and fixed:
 - **Sign-in lockout** is per user and computer, so someone typing wrong passwords elsewhere cannot lock a real user out.
 - **Job creators** always count as makers, also for jobs created before this version.
 
+Found by the independent checker in its second round and fixed:
+
+- **Two jobs writing the same destination file at the same moment** (same destination folder, same file names) could, on Linux and Docker, both report the file as copied while one copy replaced the other. The final step of each copy is now protected per destination path: one job copies the file and the other reports it as already at the destination.
+- **Approval through the API** must include the job version when maker-checker is on (the screen always sends it).
+- **A slow upload** no longer holds up other people working on the same job; an upload is received completely before the job is changed, and a change that would wait more than a minute is refused with "This job is busy".
+- **A blank value for a folder-template token** (for example `{ModuleCode}` with an empty or `-` module) is INVALID instead of silently removing a folder level.
+- **Unknown setting names** are refused instead of ignored.
+- **Source and destination checks** use each folder's real location (folder links are followed) and respect upper/lower case where the file system does (Linux); cloud connection names are compared without regard to case.
+- **Restarting with the same `DOCORG_ADMIN_PASSWORD`** no longer signs the administrator out or undoes a password changed in the application; the variable is applied only when its value changes.
+
 ### 2.10 Other changes
 
 - Matching uses an internal sequence number, so repeated record IDs (within or across mapping files) no longer affect matching.

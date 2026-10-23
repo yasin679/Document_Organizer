@@ -79,6 +79,7 @@ function xlsxSheets(buf) {
         'E1,COM5.tar,2024-01-01,l1f.pdf',                  // reserved name before the first dot
         '..,Offer,2024-01-01,l1g.pdf',                      // only dots: would disappear as a folder
         'E1, . ,2024-01-01,l1h.pdf'].join('\r\n');
+      const csvMod = 'EmployeeCode,Type,Module,UploadedOn,FileName\r\nE7,Offer,,2024-01-01,l1a.pdf\r\nE7,Offer,-,2024-01-01,l1b.pdf\r\nE7,Offer,HR,2024-01-01,l1c.pdf';
       const { id } = await job('L1', src, dst, 'l1.csv', csv);
       const it = await items(id);
       const dk = f => it.find(i => i.fileName === f)?.destKey || '';
@@ -90,6 +91,10 @@ function xlsxSheets(buf) {
       check(dk('l1f.pdf').split('/')[1] === '_COM5.tar', `reserved name before a dot prefixed: ${dk('l1f.pdf')}`);
       check(it.find(i => i.fileName === 'l1g.pdf')?.status === 'INVALID' && /only dots/.test(it.find(i => i.fileName === 'l1g.pdf').reason), 'employee code of only dots is INVALID, not filed one level up');
       check(it.find(i => i.fileName === 'l1h.pdf')?.status === 'INVALID', 'document type of only a dot is INVALID');
+      const { id: mid } = await job('L1 module', src, join(root, 'L1m-out'), 'mod.csv', csvMod, { template: '{EmployeeCode}/{DocumentType}/{ModuleCode}/{Year}/{FileName}' });
+      const mi = await items(mid);
+      check(['l1a.pdf', 'l1b.pdf'].every(f => mi.find(i => i.fileName === f)?.status === 'INVALID' && /ModuleCode is blank/.test(mi.find(i => i.fileName === f).reason)) && mi.find(i => i.fileName === 'l1c.pdf')?.destKey === 'E7/Offer/HR/2024/l1c.pdf',
+        'a blank (or "-") value for a template token is INVALID instead of silently dropping a folder level');
       const done = await copy(id);
       const all = walk(dst);
       check(done.counts.PROCESSED === 6 && all.length === 6 && all.every(p => resolve(p).startsWith(resolve(dst) + '/')), 'all six copied, every file inside the destination folder');
@@ -214,6 +219,44 @@ function xlsxSheets(buf) {
       const it = await items(id);
       check(it.every(i => i.destKey.split('/').pop().length <= 150), 'very long file names are shortened in the destination');
       check(it.filter(i => i.status === 'READY').length === 1 && it.some(i => i.status === 'DUPLICATE' && /collision/.test(i.reason)), 'two long names that shorten to the same name: one copied, the other reported (not overwritten)');
+    }
+
+    console.log('\n== L9  Two jobs copying the same file names into the same destination at once');
+    {
+      const n = 600, a = [], b = [];
+      for (let i = 0; i < n; i++) { a.push([`s${i}.pdf`, 'from job A ' + i]); b.push([`s${i}.pdf`, 'from job B ' + i]); }
+      const sa = files(join(root, 'L9a'), a), sb = files(join(root, 'L9b'), b), dst = join(root, 'L9-out');
+      const csv = ['EmployeeCode,Type,UploadedOn,FileName', ...a.map(([f]) => `E1,Offer,2024-01-01,${f}`)].join('\r\n');
+      const [ja, jb] = await Promise.all([job('L9 A', sa, dst, 'a.csv', csv), job('L9 B', sb, dst, 'b.csv', csv)]);
+      await Promise.all([call('POST', `/api/jobs/${ja.id}/approve`, { acknowledge: true }), call('POST', `/api/jobs/${jb.id}/approve`, { acknowledge: true })]);
+      const [da, db2] = await Promise.all([waitFor(ja.id, ['Completed', 'Completed with exceptions']), waitFor(jb.id, ['Completed', 'Completed with exceptions'])]);
+      const all2 = async id => [...(await items(id, 'status=ALL&page=1')), ...(await items(id, 'status=ALL&page=2'))];
+      const ia = await all2(ja.id), ib = await all2(jb.id);
+      const both = ia.filter(x => x.status === 'PROCESSED' && ib.find(y => y.fileName === x.fileName)?.status === 'PROCESSED').length;
+      const wrong = [...ia.map(x => [x, 'A']), ...ib.map(x => [x, 'B'])].filter(([x, who]) => x.status === 'PROCESSED' && !readFileSync(join(dst, ...x.destKey.split('/')), 'utf8').startsWith('from job ' + who)).length;
+      check(both === 0 && wrong === 0, `each file is copied by exactly one job and holds that job's content (both: ${both}, wrong content: ${wrong})`);
+      const pa = da.counts.PROCESSED, pb = db2.counts.PROCESSED;
+      check(ia.length === n && ib.length === n, 'every item of both jobs checked');
+      console.log(`   A copied ${pa}, B copied ${pb}; statuses A ${JSON.stringify(ia.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {}))} B ${JSON.stringify(ib.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {}))}`);
+      check(pa + pb === n, `${n} files copied in total, the rest reported as already at the destination (${pa} + ${pb})`);
+    }
+
+    console.log('\n== L10  A slow upload does not hold up other people');
+    {
+      const src = files(join(root, 'L10'), [['a.pdf'], ['u.pdf']]);
+      const { id } = await job('L10', src, join(root, 'L10-out'), 'm.csv', 'EmployeeCode,Type,UploadedOn,FileName\r\nE1,Offer,2024-01-01,a.pdf\r\nE2,Offer,2024-01-01,gone.pdf');
+      const boundary = '----docorgslow';
+      const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="slow.csv"\r\nContent-Type: text/csv\r\n\r\nEmployeeCode,Type,UploadedOn,FileName\r\n`);
+      const tail = Buffer.from(`E3,Offer,2024-01-01,u.pdf\r\n\r\n--${boundary}--\r\n`);
+      const body = new ReadableStream({ async start(c) { c.enqueue(head); for (let i = 0; i < 6; i++) { await sleep(500); c.enqueue(Buffer.from(`E${10 + i},Offer,2024-01-01,x${i}.pdf\r\n`)); } c.enqueue(tail); c.close(); } });
+      const slow = fetch(`${base}/api/jobs/${id}/mappings`, { method: 'POST', headers: { 'X-DocOrg': '1', cookie, 'content-type': `multipart/form-data; boundary=${boundary}` }, body, duplex: 'half' });
+      await sleep(300);
+      const t0 = Date.now();
+      await call('POST', `/api/jobs/${id}/items/exclude`, { allInView: true, status: 'MISSING', note: 'while someone uploads slowly' });
+      const waited = Date.now() - t0;
+      const r = await slow;
+      check(waited < 1500, `another change to the job went through while a 3-second upload was still arriving (waited ${waited} ms)`);
+      check(r.ok, `the slow upload itself succeeded (${r.status})`);
     }
 
     console.log('\n== L8  Reports');

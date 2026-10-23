@@ -133,6 +133,8 @@ No. There is no screen or API to change the audit log.
 | No temporary password appears | A password already exists in the database | Set a new one with `DOCORG_ADMIN_PASSWORD` at start-up |
 | "Sign-in from this computer is blocked for 10 minutes" | 5 wrong passwords from this computer | Wait 10 minutes, or ask an administrator to reset the password |
 | "The job has changed since you opened it" | Someone rescanned, resubmitted or changed exceptions after you opened the page | Reload the page, review again, then approve |
+| "This job is busy with another change" | Someone else's change to the same job took longer than a minute | Try again in a moment |
+| "Mapping record …: ModuleCode is blank, but the folder template uses {ModuleCode}" | A template token has no value for this record | Fill the value in the mapping file, or remove the token from the template in step 4 |
 | "Source folder cannot be inside the destination folder" | Copies could be written into the source | Choose a destination outside the source, for example a sibling folder |
 | "… cannot be used as a folder name (it is only dots or spaces)" | An employee code or type such as `.` or `..` | Correct the value in the mapping file and scan again |
 | Signed out unexpectedly | 30 minutes without activity | Sign in again. Running jobs are not affected. |
